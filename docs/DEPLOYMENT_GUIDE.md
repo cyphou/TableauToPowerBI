@@ -176,11 +176,17 @@ projects; a migration failure retains its own nonzero exit status. Partial
 captures and unavailable refresh evidence stay failures, not substitute successes.
 
 Only applications launched by this run are closed after captures. Existing
-applications are not closed or reused without ownership evidence. The
-diagnostic does not save Desktop changes automatically; saving a local cache
-and proving persistence by reopening remain separate operations. It does not
-rewrite static quality results into native certification. Keep source data,
-captures and manifests outside the repository.
+applications are not closed or reused without ownership evidence. After a
+refresh remains verified through the post-render check, the probe invokes
+Power BI Desktop's `Save`/`Enregistrer` button on that owned report window
+before closing it. The JSON result records `save.status` as `not_requested`
+when refresh was not requested, `not_attempted` when refresh was not verified,
+`invoked`, or `unavailable`; an unavailable save also adds a warning.
+`invoked` confirms that UI Automation dispatched the Save command, not an
+independent disk-persistence check. Reopen the project separately when that
+check is required. The probe does not rewrite static quality results into
+native certification. Keep source data, captures and manifests outside the
+repository.
 
 ## Client-side opening validation
 
@@ -220,8 +226,9 @@ Moving the project requires updating the copied Excel's absolute path, and
 service refresh needs access to it. It contains all sheets and workbook
 metadata: keep source-bearing output and downloadable ZIPs out of repositories.
 Initial calculated-object/no-data banners are expected for an unprocessed
-metadata-only model, not proof of either success or failure. After a successful
-refresh, save in Desktop to retain its local cache and verify by reopening.
+metadata-only model, not proof of either success or failure. The probe saves
+after a verified refresh; verify retained state by reopening the project when
+required.
 The `DataFolder` used by staged Hyper exports is not a replacement binding for
 native file sources. See the
 [source-mode diagram](ARCHITECTURE.md#automatic-storage-mode-and-hyper-export).

@@ -356,6 +356,7 @@ class DesktopProbeReport:
     refresh: dict = field(default_factory=lambda: {
         "status": "not_requested", "clicks": 0, "waited_s": 0.0,
     })
+    save: dict = field(default_factory=lambda: {"status": "not_requested"})
 
     @property
     def opened(self) -> bool:
@@ -933,6 +934,10 @@ def _watch_window(report, proc, pbip_path, start, timeout,
         report.refresh = refresh_report(window.hwnd, pbip_path, owner_pid,
                                         timeout=refresh_timeout,
                                         stop_when=process_exited)
+        report.save = {
+            "status": "not_attempted",
+            "note": "refresh_not_verified",
+        }
         report.data_load = report.refresh["data_load"]
         rc = observe_exit()
         if rc is not None:
@@ -1034,6 +1039,51 @@ def _watch_window(report, proc, pbip_path, start, timeout,
             report.warnings.append(
                 "Window capture failed, was blank, or could not be inspected; "
                 "screenshot data are not verified.")
+
+    if refresh and report.refresh.get("status") == "verified":
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
+        if desktop_window.window_process_id(window.hwnd) != owner_pid:
+            report.save = {
+                "status": "error",
+                "note": "document_window_ownership_changed_before_save",
+            }
+            report.warnings.append(
+                "Refresh verified, but Save was not invoked because the report "
+                "window ownership changed.")
+            return False
+        rc = observe_exit()
+        if rc is not None:
+            return rc != 0
+        try:
+            invoked = _invoke_button(
+                window.hwnd, ("Save", "Enregistrer"), timeout=30.0,
+                owner_pid=owner_pid)
+            report.save = {
+                "status": "invoked" if invoked == 1 else "unavailable",
+                "button_names": ["Save", "Enregistrer"],
+                "persistence_verified": False,
+                "note": (
+                    "Desktop Save command invoked after verified refresh; "
+                    "file persistence is not independently observable."
+                    if invoked == 1 else
+                    "Save/Enregistrer button was not found or enabled."
+                ),
+            }
+            rc = observe_exit()
+            if rc is not None:
+                return rc != 0
+            if invoked != 1:
+                report.warnings.append(
+                    "Refresh verified, but Desktop's Save/Enregistrer button "
+                    "could not be invoked.")
+        except PowerShellFailure as exc:
+            report.save = dict(exc.observation)
+            report.save["persistence_verified"] = False
+            report.warnings.append(
+                "Refresh verified, but Desktop save could not be confirmed: "
+                + str(exc.observation.get("cause", "UI Automation failed")))
     return False
 
 

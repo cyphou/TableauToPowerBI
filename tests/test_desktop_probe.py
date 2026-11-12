@@ -868,6 +868,50 @@ class TestRefreshWindowVerification(unittest.TestCase):
         self.assertTrue(report.screenshot_data_verified)
         capture.assert_called_once()
 
+    def test_verified_refresh_saves_once_through_owned_desktop_button(self):
+        from powerbi_import import desktop_probe as dp
+        with mock.patch.object(dp, "_invoke_button", return_value=1) as save:
+            report, _, _, _, _ = self.watch("verified")
+
+        self.assertEqual(report.refresh["status"], "verified")
+        self.assertTrue(report.screenshot_data_verified)
+        self.assertEqual(report.save["status"], "invoked")
+        self.assertFalse(report.save["persistence_verified"])
+        save.assert_called_once()
+        hwnd, names = save.call_args.args
+        self.assertEqual(hwnd, 101)
+        self.assertIn("Save", names)
+        self.assertIn("Enregistrer", names)
+        self.assertEqual(save.call_args.kwargs.get("owner_pid"), 4242)
+
+    def test_verified_refresh_reports_save_unavailable_with_warning(self):
+        from powerbi_import import desktop_probe as dp
+        with mock.patch.object(dp, "_invoke_button", return_value=0):
+            report, _, _, _, _ = self.watch("verified")
+
+        self.assertEqual(report.refresh["status"], "verified")
+        self.assertEqual(report.save["status"], "unavailable")
+        self.assertFalse(report.save["persistence_verified"])
+        self.assertTrue(any("Save/Enregistrer button could not be invoked" in warning
+                            for warning in report.warnings))
+
+    def test_unverified_or_revoked_refresh_never_saves(self):
+        from powerbi_import import desktop_probe as dp
+        for status in ("refresh_error", "busy", "pending_changes", "unavailable"):
+            with self.subTest(status=status), \
+                 mock.patch.object(dp, "_invoke_button") as save:
+                report, _, _, _, _ = self.watch(status)
+                self.assertEqual(report.save["status"], "not_attempted")
+                save.assert_not_called()
+
+        with mock.patch.object(dp, "_invoke_button") as save:
+            report, _, _, _, _ = self.watch(
+                "verified", late_state="refresh_error")
+        self.assertEqual(report.refresh["status"], "refresh_error")
+        self.assertFalse(report.screenshot_data_verified)
+        self.assertEqual(report.save["status"], "not_attempted")
+        save.assert_not_called()
+
     def test_failed_blank_or_unreadable_capture_is_not_verified_by_old_row_counts(self):
         for screenshot, blank in (
                 (None, False), ("synthetic.png", True), ("synthetic.png", None)):
