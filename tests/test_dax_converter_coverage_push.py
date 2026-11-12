@@ -456,15 +456,19 @@ class TestRegexpMatch(unittest.TestCase):
         self.assertIn('xyz', result)
 
     def test_all_digits(self):
-        # ^[0-9]+$ → ISNUMBER(VALUE(...))
+        # Anchored digits-only regex rejects numeric coercions such as decimals.
         result = _convert_regexp_match('REGEXP_MATCH([Code], "^[0-9]+$")')
-        self.assertIn('ISNUMBER', result)
-        self.assertIn('VALUE', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertNotIn('ISNUMBER', result)
+        self.assertNotIn('verify manually', result)
 
     def test_all_letters_char_class(self):
-        # ^[a-zA-Z]+$ → CODE-based check
+        # Anchored ASCII letters are checked across the full string.
         result = _convert_regexp_match('REGEXP_MATCH([Name], "^[a-zA-Z]+$")')
-        self.assertIn('verify manually', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertNotIn('verify manually', result)
 
     def test_contains_digit(self):
         # [0-9] → OR of CONTAINSSTRING
@@ -474,21 +478,28 @@ class TestRegexpMatch(unittest.TestCase):
         self.assertIn('"9"', result)
 
     def test_contains_lowercase(self):
-        # [a-z] → CODE-based
+        # [a-z] scans every character using case-sensitive code points.
         result = _convert_regexp_match('REGEXP_MATCH([X], "[a-z]")')
-        self.assertIn('CODE', result)
-        self.assertIn('97', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertIn('> 0', result)
+        self.assertNotIn('verify manually', result)
 
     def test_contains_uppercase(self):
-        # [A-Z] → CODE-based
+        # [A-Z] scans every character using case-sensitive code points.
         result = _convert_regexp_match('REGEXP_MATCH([X], "[A-Z]")')
-        self.assertIn('CODE', result)
-        self.assertIn('65', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertIn('> 0', result)
+        self.assertNotIn('verify manually', result)
 
     def test_general_char_class(self):
-        # [0-5] → char class check
+        # [0-5] scans every character in the source string.
         result = _convert_regexp_match('REGEXP_MATCH([X], "[0-5]")')
-        self.assertIn('character class', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertIn('> 0', result)
+        self.assertNotIn('verify manually', result)
 
     def test_alternation(self):
         # cat|dog → OR of CONTAINSSTRING
@@ -519,7 +530,8 @@ class TestRegexpMatch(unittest.TestCase):
             'REGEXP_MATCH([Email], "^[a-zA-Z]+$")',
             table_name='Users'
         )
-        self.assertIn('verify manually', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertNotIn('verify manually', result)
 
     def test_string_literal_brackets_not_resolved_as_columns(self):
         """Ensure bracket patterns inside string literals are not resolved as columns.
@@ -532,12 +544,12 @@ class TestRegexpMatch(unittest.TestCase):
             table_name='Campaigns',
             column_table_map={'utm_campaign': 'Campaigns'},
         )
-        # The regex pattern inside the string must be preserved as-is
-        self.assertIn('"^[a-z0-9_-]+$"', result)
-        # The column reference should be table-qualified
+        # The supported regex is compiled; its class must not become a model ref.
+        self.assertIn('GENERATESERIES', result)
+        self.assertNotIn('"^[a-z0-9_-]+$"', result)
         self.assertIn("'Campaigns'[utm_campaign]", result)
-        # The table name must NOT appear inside the string literal
         self.assertNotIn("'Campaigns'[a-z0-9_-]", result)
+        self.assertNotIn('verify manually', result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -660,6 +672,42 @@ class TestRegexpReplace(unittest.TestCase):
         result = _convert_regexp_replace('REGEXP_REPLACE([Name], "old", "new")')
         self.assertIn('SUBSTITUTE', result)
         self.assertIn('"old"', result)
+
+    def test_optional_https_scheme_replaces_both_literal_forms(self):
+        for replacement in ('""', '"site/"'):
+            with self.subTest(replacement=replacement):
+                result = _convert_regexp_replace(
+                    f'REGEXP_REPLACE([URL], "https?://", {replacement})')
+                self.assertEqual(
+                    result,
+                    f'SUBSTITUTE(SUBSTITUTE([URL], "https://", {replacement}), '
+                    f'"http://", {replacement})')
+                self.assertNotIn('verify manually', result)
+
+    def test_optional_https_scheme_passes_main_dax_validation(self):
+        result = convert_tableau_formula_to_dax(
+            'REGEXP_REPLACE([creative_url], "https?://", "")',
+            table_name='Campaigns',
+            table_columns=['creative_url'],
+            column_table_map={'creative_url': 'Campaigns'},
+            is_calc_column=True,
+            calc_datatype='string',
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+        self.assertEqual(
+            result,
+            'SUBSTITUTE(SUBSTITUTE(\'Campaigns\'[creative_url], '
+            '"https://", ""), "http://", "")',
+        )
+        from powerbi_import.dax_validator import validate_dax_expression
+        self.assertEqual(validate_dax_expression(result), [])
+
+    def test_other_optional_scheme_patterns_remain_manual(self):
+        result = _convert_regexp_replace(
+            'REGEXP_REPLACE([URL], "http(s)?://", "")')
+        self.assertIn('verify manually', result)
+        self.assertIn('SUBSTITUTE([URL], "http(s)?://", "")', result)
 
     def test_char_class(self):
         # [aeiou] → chained SUBSTITUTE
@@ -1485,7 +1533,10 @@ class TestMultiPhaseInteractions(unittest.TestCase):
             table_name='Products',
             column_table_map={'Code': 'Products'}
         )
-        self.assertIn('ISNUMBER', result)
+        self.assertIn("'Products'[Code]", result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertNotIn('ISNUMBER', result)
 
     def test_case_then_resolve(self):
         result = convert_tableau_formula_to_dax(
@@ -1504,6 +1555,24 @@ class TestMultiPhaseInteractions(unittest.TestCase):
         )
         self.assertIn('AVERAGEX', result)
         self.assertIn('DIVIDE', result)
+
+    def test_paired_statistics_require_pair_grain_evidence(self):
+        fields = ['budget', 'deal_value', 'spend', 'engagement_score']
+        column_table_map = {field: 'Campaigns' for field in fields}
+        for formula in (
+            'CORR([budget], [deal_value])',
+            'COVAR([spend], [engagement_score])',
+            'COVARP([spend], [engagement_score])',
+        ):
+            with self.subTest(formula=formula):
+                result = convert_tableau_formula_to_dax(
+                    formula, table_name='Campaigns', table_columns=fields,
+                    column_table_map=column_table_map,
+                    validate_output=True, fallback_on_invalid=True)
+                self.assertIn('TODO: DAX conversion validation failed', result)
+                self.assertIn('paired correlation/covariance requires verified source row pairs',
+                              result)
+                self.assertNotIn('unaggregated row expression', result)
 
     def test_window_corr_via_main(self):
         result = convert_tableau_formula_to_dax(

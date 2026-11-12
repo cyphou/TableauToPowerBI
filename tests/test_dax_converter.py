@@ -89,8 +89,21 @@ class TestMinOneMeasure(unittest.TestCase):
         from powerbi_import.dax_validator import validate_dax_expression
         self.assertEqual(validate_dax_expression(result), [])
 
+    def test_max_one_measure_tracks_nonempty_rows_and_validates(self):
+        result = convert_tableau_formula_to_dax(
+            " MAX ( 1 ) ",
+            table_name="Players",
+            table_columns=["Player"],
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+
+        self.assertEqual(result, "IF(COUNTROWS('Players') > 0, 1, BLANK())")
+        from powerbi_import.dax_validator import validate_dax_expression
+        self.assertEqual(validate_dax_expression(result), [])
+
     def test_conversion_stays_with_exact_measure_literal(self):
-        for formula in ("MIN(2)", "MIN(1.0)", "MAX(1)"):
+        for formula in ("MIN(2)", "MIN(1.0)"):
             with self.subTest(formula=formula):
                 result = convert_tableau_formula_to_dax(
                     formula,
@@ -105,6 +118,18 @@ class TestMinOneMeasure(unittest.TestCase):
     def test_min_one_calculated_column_does_not_use_measure_conversion(self):
         result = convert_tableau_formula_to_dax(
             "MIN(1)",
+            table_name="Players",
+            table_columns=["Player"],
+            is_calc_column=True,
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+
+        self.assertIn("TODO: DAX conversion validation failed", result)
+
+    def test_max_one_calculated_column_does_not_use_measure_conversion(self):
+        result = convert_tableau_formula_to_dax(
+            "MAX(1)",
             table_name="Players",
             table_columns=["Player"],
             is_calc_column=True,
@@ -290,15 +315,43 @@ class TestStandaloneNullRegression(unittest.TestCase):
     def test_escaped_quote_delimiters_protect_null_text(self):
         cases = (
             ('"left "" NULL() "" right"', '"left "" NULL() "" right"'),
-            (r'"left \" NULL() \" right"', r'"left \" NULL() \" right"'),
+            (r'"left \" NULL() \" right"', '"left "" NULL() "" right"'),
             ("'left '' NULL() '' right'", '"left \' NULL() \' right"'),
-            (r"'left \' NULL() \' right'", r'"left \" NULL() \" right"'),
+            (r"'left \' NULL() \' right'", '"left \' NULL() \' right"'),
         )
         for formula, expected in cases:
             with self.subTest(formula=formula):
                 self.assertEqual(
                     convert_tableau_formula_to_dax(formula), expected
                 )
+
+    def test_tableau_escaped_quotes_convert_to_valid_dax_strings(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        cases = (
+            (r'"a \"quoted\" value"', '"a ""quoted"" value"'),
+            (r"'it\'s ready'", '"it\'s ready"'),
+            (r'"ordinary \\ path"', r'"ordinary \\ path"'),
+        )
+        for formula, expected in cases:
+            with self.subTest(formula=formula):
+                result = convert_tableau_formula_to_dax(
+                    formula, validate_output=True, fallback_on_invalid=True)
+                self.assertEqual(result, expected)
+                self.assertEqual(validate_dax_expression(result), [])
+
+    def test_escaped_quotes_in_calculated_column_condition_and_result(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        formula = (r'''IF [Flag] = "a \"quoted\" value" THEN 'it\'s ready' '''
+                   r'''ELSE 'no' END''')
+        result = convert_tableau_formula_to_dax(
+            formula, table_name='Sales', table_columns=['Flag'],
+            column_table_map={'Flag': 'Sales'}, is_calc_column=True,
+            validate_output=True, fallback_on_invalid=True)
+        self.assertEqual(
+            result, '''IF('Sales'[Flag] = "a ""quoted"" value", "it's ready", "no")''')
+        self.assertEqual(validate_dax_expression(result), [])
 
     def test_longer_identifiers_are_not_null_literals(self):
         for identifier in (

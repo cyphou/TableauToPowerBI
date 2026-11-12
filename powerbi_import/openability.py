@@ -31,7 +31,7 @@ from typing import Dict, List, Tuple
 # In-package, stdlib-only validators. A failed import is a broken install, not a
 # missing optional dependency: swallowing it would make every DAX/M expression
 # look valid and let this gate declare an unopenable project openable.
-from powerbi_import.dax_validator import validate_dax_expression
+from powerbi_import.dax_validator import _scan_comments, validate_dax_expression
 from powerbi_import.m_validator import validate_m_query
 
 STATIC_SCOPE = "static_project_checks"
@@ -45,7 +45,14 @@ STATIC_LIMITATION = (
 # with exactly 4 tabs by the generator; see tmdl_generator._write_partition).
 _PARTITION_RE = re.compile(r"^\tpartition\s+(.+?)\s*=\s*(\w+)\s*$")
 _SOURCE_RE = re.compile(r"^\t\tsource\s*=\s*$")
-_MEASURE_RE = re.compile(r"^\s*measure\s+(?:'(?:[^']|'')+'|[^=\n]+?)\s*=\s*(.+?)\s*$")
+_MEASURE_RE = re.compile(
+    r"^\s*measure\s+(?P<name>'(?:[^']|'')+'|[^=\n]+?)\s*=\s*"
+    r"(?P<expression>.+?)\s*$"
+)
+_DAX_PLACEHOLDER_REASON_RE = re.compile(
+    r"/\*\s*TODO:\s*DAX conversion validation failed for measure:\s*(.*?)\s*\*/",
+    re.IGNORECASE,
+)
 _SHARED_M_EXPRESSION_RE = re.compile(r"^expression\s+(.+?)\s*=\s*$")
 
 
@@ -431,8 +438,21 @@ def _check_dax(project_dir) -> CheckResult:
                 m = _MEASURE_RE.match(line)
                 if not m:
                     continue
-                for problem in validate_dax_expression(m.group(1)):
-                    issues.append(f"{os.path.relpath(tmdl, project_dir)}: {problem}")
+                measure_name = m.group("name").strip()
+                if measure_name.startswith("'") and measure_name.endswith("'"):
+                    measure_name = measure_name[1:-1].replace("''", "'")
+                expression = m.group("expression")
+                for problem in validate_dax_expression(expression):
+                    if problem == 'unsupported DAX conversion placeholder':
+                        _, comments, _ = _scan_comments(expression)
+                        reason = next((match for comment in comments
+                                       if (match := _DAX_PLACEHOLDER_REASON_RE.match(comment))),
+                                      None)
+                        if reason:
+                            problem = reason.group(1) + ': ' + problem
+                    issues.append(
+                        f"{os.path.relpath(tmdl, project_dir)}: measure "
+                        f"{measure_name}: {problem}")
         except OSError:
             continue
     return CheckResult("dax", not issues, "error", issues)

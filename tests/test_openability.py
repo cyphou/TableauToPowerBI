@@ -320,6 +320,84 @@ class TestOpenability(unittest.TestCase):
             self.assertFalse(r.openable)
             self.assertTrue(any("dax" in b for b in r.blocking_issues))
 
+    def test_unsupported_dax_placeholder_names_the_affected_measure(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmdl = ("table 'Sales'\n"
+                    "\tmeasure 'Owner''s One' = "
+                    "/* TODO: DAX conversion validation failed for measure: "
+                    "unverified row grain */ BLANK()\n"
+                    + _tmdl_with_m(["let x=1 in x"]))
+            _write_project(d, tmdl)
+            report = check_openability(d)
+            self.assertFalse(report.openable)
+            self.assertTrue(any(
+                "measure Owner's One" in issue
+                and "unsupported DAX conversion placeholder" in issue
+                and "unverified row grain" in issue
+                for issue in report.blocking_issues
+            ), report.blocking_issues)
+
+    def test_placeholder_reason_ignores_marker_inside_string(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmdl = ('table Sales\n\tmeasure M = '
+                    '"/* TODO: DAX conversion validation failed for measure: '
+                    'not a reason */" & '
+                    '/* TODO: DAX conversion validation failed for measure: '
+                    'real reason */ BLANK()\n'
+                    + _tmdl_with_m(["let x=1 in x"]))
+            _write_project(d, tmdl)
+            report = check_openability(d)
+            dax = next(check for check in report.checks if check.name == 'dax')
+            self.assertFalse(dax.ok)
+            self.assertEqual(len(dax.issues), 1)
+            self.assertIn('real reason: unsupported DAX conversion placeholder',
+                          dax.issues[0])
+            self.assertNotIn('not a reason', dax.issues[0])
+
+    def test_placeholder_reason_survives_apostrophe_in_previous_comment(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmdl = ("table Sales\n\tmeasure M = /* author's note */ "
+                    "/* TODO: DAX conversion validation failed for measure: "
+                    "unverified row grain */ BLANK()\n"
+                    + _tmdl_with_m(["let x=1 in x"]))
+            _write_project(d, tmdl)
+            report = check_openability(d)
+            dax = next(check for check in report.checks if check.name == 'dax')
+            self.assertFalse(dax.ok)
+            self.assertTrue(any('unverified row grain: unsupported DAX conversion '
+                                'placeholder' in issue for issue in dax.issues))
+
+    def test_legacy_placeholder_remains_blocking_without_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmdl = ('table Sales\n\tmeasure M = '
+                    '/* TODO: DAX conversion validation failed for M */ BLANK()\n'
+                    + _tmdl_with_m(["let x=1 in x"]))
+            _write_project(d, tmdl)
+            report = check_openability(d)
+            dax = next(check for check in report.checks if check.name == 'dax')
+            self.assertFalse(dax.ok)
+            self.assertTrue(any('unsupported DAX conversion placeholder' in issue
+                                for issue in dax.issues))
+
+    def test_quality_report_preserves_placeholder_reason(self):
+        from powerbi_import.migration_quality import build_quality_report
+
+        with tempfile.TemporaryDirectory() as d:
+            tmdl = ('table Sales\n\tmeasure M = '
+                    '/* TODO: DAX conversion validation failed for measure: '
+                    'unverified row grain */ BLANK()\n'
+                    + _tmdl_with_m(["let x=1 in x"]))
+            _write_project(d, tmdl)
+            report = build_quality_report({}, d, 'P').to_dict()
+            self.assertEqual(report['status'], 'FAIL')
+            self.assertEqual(report['roundtrip_validation']['static']['status'],
+                             'static_fail')
+            self.assertTrue(any(
+                'measure M: unverified row grain: '
+                'unsupported DAX conversion placeholder' in issue
+                for issue in report['roundtrip_validation']['static']['issues']
+            ))
+
     def test_report_to_dict_shape(self):
         with tempfile.TemporaryDirectory() as d:
             _write_project(d, _tmdl_with_m(["let x=1 in x"]))

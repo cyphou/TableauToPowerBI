@@ -338,7 +338,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
 
     dax = formula.strip()
     if (not is_calc_column and table_columns is not None
-            and re.fullmatch(r'MIN\s*\(\s*1\s*\)', dax, re.IGNORECASE)):
+            and re.fullmatch(r'(?:MIN|MAX)\s*\(\s*1\s*\)', dax, re.IGNORECASE)):
         safe_table_name = str(table_name).replace("'", "''")
         dax = f"IF(COUNTROWS('{safe_table_name}') > 0, 1, BLANK())"
         if validate_output:
@@ -349,12 +349,13 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                 issues = ['DAX validator unavailable']
             if issues and fallback_on_invalid:
                 return _unsupported_conversion(
-                    'MIN(1) presence measure failed DAX expression validation')
+                    'MIN/MAX(1) presence measure failed DAX expression validation')
         return dax
 
     # Tableau comments may contain apostrophes and Tableau function names.
     # Remove them before quote conversion and validation.
     dax = _strip_tableau_comments(dax)
+    dax = _normalize_tableau_quote_escapes(dax)
     # Tableau's standalone NULL (and legacy NULL()) is a DAX BLANK().
     # Normalize before resolving references so captions/parameter values
     # introduced later cannot be mistaken for source-language literals.
@@ -461,7 +462,10 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_div(dax)
     dax = _convert_square(dax)
     dax = _convert_iif(dax)
-    dax = _convert_regexp_match(dax)
+    regex_series_value_token = '__TTPBI_GENERATESERIES_VALUE__'
+    while regex_series_value_token.casefold() in dax.casefold():
+        regex_series_value_token = '_' + regex_series_value_token
+    dax = _convert_regexp_match(dax, value_column_ref=regex_series_value_token)
     dax = _convert_regexp_extract(dax)
     dax = _convert_regexp_extract_nth(dax)
     dax = _convert_regexp_replace(dax)
@@ -581,8 +585,8 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _normalize_spaces_outside_identifiers(dax).strip()
     # Strip // line comments before collapsing newlines — otherwise
     # the comment swallows the rest of the single-line DAX/M expression.
-    dax = re.sub(r'(?m)^\s*//[^\r\n]*', '', dax)  # Full-line comments
-    dax = re.sub(r'(?m)\s*//[^\r\n"]*\r?$', '', dax)  # Trailing comments (\r? handles CRLF)
+    dax = _strip_tableau_comments(dax, keep_block_comments=True,
+                                  tableau_string_escapes=False)
     dax = _RE_NEWLINES.sub(' ', dax)
 
     # === Phase 6b: Fix date literals ===
@@ -595,6 +599,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # Parse operators rather than matching slashes in strings/identifiers.
     dax = _convert_measure_ref_ratio(dax, measure_names)
     dax = _convert_safe_division(dax)
+    dax = dax.replace(regex_series_value_token, '[Value]')
 
     # === Phase 7: Optional conversion guard validation (Phase 3 foundation) ===
     if validate_output:
@@ -781,7 +786,9 @@ class _SourceExpressionParser:
 _SOURCE_AGGREGATES = frozenset({
     'SUM', 'AVG', 'AVERAGE', 'MIN', 'MAX', 'COUNT', 'COUNTD', 'COUNTA',
     'MEDIAN', 'STDEV', 'STDEVP', 'VAR', 'VARP', 'PERCENTILE', 'ATTR',
+    'CORR', 'COVAR', 'COVARP',
 })
+_PAIRED_SOURCE_AGGREGATES = frozenset({'CORR', 'COVAR', 'COVARP'})
 _SOURCE_COMPARISONS = frozenset({'=', '==', '!=', '<>', '<', '<=', '>', '>='})
 _SOURCE_BOOLEAN = frozenset({'AND', 'OR', '&&', '||'})
 
@@ -1118,6 +1125,14 @@ def _check_source_grain(root, table_name, column_table_map, measure_names,
             return None
         if node[0] == 'call' and node[1].upper() in _SOURCE_AGGREGATES:
             args = node[2]
+            aggregate_name = node[1].upper()
+            if aggregate_name in _PAIRED_SOURCE_AGGREGATES:
+                if len(args) != 2:
+                    return 'correlation/covariance requires exactly two source expressions'
+                if table_columns is not None:
+                    return ('paired correlation/covariance requires verified source row '
+                            'pairs, filter context, shelf aggregation and total grain')
+                return None
             if len(args) != 1:
                 return ('aggregate argument or grain is not established'
                         if table_columns is not None else None)
@@ -1611,27 +1626,54 @@ def _convert_null_literals(text):
     )
 
 
-def _strip_tableau_comments(text):
-    """Remove Tableau comments while preserving // and /* inside strings."""
+def _normalize_tableau_quote_escapes(text):
+    def normalize(match):
+        token = match.group(0)
+        delimiter = token[0]
+        if delimiter == '[' or re.match(r'\s*\[', text[match.end():]):
+            return token
+        return re.sub(
+            r'\\(.)',
+            lambda escape: delimiter * 2 if escape.group(1) == delimiter
+            else escape.group(0),
+            token,
+        )
+
+    return _RE_NULL_PROTECTED_TOKEN.sub(normalize, text)
+
+
+def _strip_tableau_comments(text, *, keep_block_comments=False,
+                            tableau_string_escapes=True):
+    """Remove Tableau comments while preserving literals and field names."""
     out = []
     i = 0
-    in_string = False
     while i < len(text):
-        if text[i] == '"':
-            out.append(text[i])
-            if in_string and i + 1 < len(text) and text[i + 1] == '"':
-                out.append(text[i + 1])
-                i += 2
-                continue
-            in_string = not in_string
+        if text[i] in ('"', "'", '['):
+            closer = {'"': '"', "'": "'", '[': ']'}[text[i]]
+            start = i
             i += 1
+            while i < len(text):
+                if (tableau_string_escapes and closer != ']'
+                        and text[i] == '\\' and i + 1 < len(text)):
+                    i += 2
+                    continue
+                if text[i] == closer:
+                    i += 1
+                    if i < len(text) and text[i] == closer:
+                        i += 1
+                        continue
+                    break
+                i += 1
+            out.append(text[start:i])
             continue
-        if not in_string and text.startswith('//', i):
+        if text.startswith('//', i):
             newline = text.find('\n', i)
             i = len(text) if newline < 0 else newline
             continue
-        if not in_string and text.startswith('/*', i):
+        if text.startswith('/*', i):
             end = text.find('*/', i + 2)
+            if keep_block_comments:
+                out.append(text[i:] if end < 0 else text[i:end + 2])
             i = len(text) if end < 0 else end + 2
             continue
         out.append(text[i])
@@ -2644,8 +2686,8 @@ def _convert_iif(dax):
     return _transform_func_call(dax, 'IIF', _xf)
 
 
-def _char_class_to_code_check(char_class_body, field_expr):
-    """Convert a regex character class body like ``a-zA-Z0-9`` to a DAX CODE-based check.
+def _char_class_to_code_check(char_class_body, field_expr, code_function='CODE'):
+    """Convert a regex character class body to a DAX code-point check.
 
     *field_expr* should be a single-character expression like ``MID(field, i, 1)``.
     Returns a DAX boolean expression using ``||`` and ``&&`` operators (not
@@ -2659,11 +2701,15 @@ def _char_class_to_code_check(char_class_body, field_expr):
             # Range like a-z
             lo = char_class_body[i]
             hi = char_class_body[i + 2]
-            parts.append(f'(CODE({field_expr}) >= {ord(lo)} && CODE({field_expr}) <= {ord(hi)})')
+            if ord(lo) > ord(hi):
+                return None
+            parts.append(
+                f'({code_function}({field_expr}) >= {ord(lo)} && '
+                f'{code_function}({field_expr}) <= {ord(hi)})')
             i += 3
         else:
             ch = char_class_body[i]
-            parts.append(f'(CODE({field_expr}) = {ord(ch)})')
+            parts.append(f'({code_function}({field_expr}) = {ord(ch)})')
             i += 1
     if not parts:
         return None
@@ -2672,7 +2718,7 @@ def _char_class_to_code_check(char_class_body, field_expr):
     return '(' + ' || '.join(parts) + ')'
 
 
-def _convert_regexp_match(dax):
+def _convert_regexp_match(dax, value_column_ref='[Value]'):
     """Convert REGEXP_MATCH(field, "pattern") to DAX equivalents.
 
     Smart conversion for common regex patterns:
@@ -2682,9 +2728,8 @@ def _convert_regexp_match(dax):
     - .+ / .* / ^.*$ → always TRUE (match anything / non-empty)
     - pat1|pat2 → CONTAINSSTRING(field, "pat1") || CONTAINSSTRING(field, "pat2")
     - simple literal (no metacharacters) → CONTAINSSTRING(field, "literal")
-    - ^[0-9]+$ → ISNUMBER(VALUE(field))  (digits-only check)
-    - ^[a-zA-Z]+$ → CODE-based letter check
-    - [a-z] / [A-Z] / [0-9] → CODE-based character class check
+    - Anchored ASCII character classes → per-character Unicode checks
+    - Unanchored ASCII character classes → any-character Unicode checks
     - \\d / \\d+ → digit detection via CODE ranges
     - complex patterns → CONTAINSSTRING fallback with warning comment
     """
@@ -2733,24 +2778,29 @@ def _convert_regexp_match(dax):
             if _is_simple_literal(body):
                 return f'(RIGHT({field}, {len(body)}) = "{body}")'
 
-        # --- Character class patterns ---
-        # ^[0-9]+$ → ISNUMBER(VALUE(field))  (entire string is digits)
-        if pat in ('^[0-9]+$', '^\\d+$'):
-            return f'ISNUMBER(VALUE({field}))'
-
-        # ^[a-zA-Z]+$ → all letters check via CODE
-        cc_full_match = re.match(r'^\^\[([a-zA-Z0-9\-]+)\]\+?\$$', pat)
-        if cc_full_match:
-            cc_body = cc_full_match.group(1)
-            code_check = _char_class_to_code_check(cc_body, f'MID({field}, __i__, 1)')
-            if code_check:
-                # Simplified: generate a NOT-contains-non-matching approach
+        # Exact ASCII character classes can be checked character by character.
+        # DAX string search is case-insensitive, so use Unicode code points to
+        # preserve the case-sensitive range semantics of regular expressions.
+        full_class = re.fullmatch(r'\^\[([a-zA-Z0-9_-]+)\]([+*])\$', pat)
+        if full_class:
+            class_body, quantifier = full_class.groups()
+            prefix = '__TableauRegex'
+            while prefix.casefold() in dax.casefold():
+                prefix = '_' + prefix
+            text_var = prefix + 'Text'
+            length_var = prefix + 'Length'
+            char_check = _char_class_to_code_check(
+                class_body, f'MID({text_var}, {value_column_ref}, 1)',
+                code_function='UNICODE')
+            if char_check:
+                empty_result = 'FALSE()' if quantifier == '+' else 'TRUE()'
+                nonempty_check = (
+                    f'COUNTROWS(FILTER(GENERATESERIES(1, {length_var}), '
+                    f'NOT({char_check}))) = 0')
                 return (
-                    f'/* REGEXP_MATCH("^[{cc_body}]+$"): all-character class check */ '
-                    f'NOT(CONTAINSSTRING(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE('
-                    f'SUBSTITUTE({field}, " ", ""), "-", ""), "_", ""), ".", ""), ",", ""), '
-                    f'"[^{cc_body}]")) '
-                    f'/* verify manually — DAX lacks native regex */'
+                    f'(VAR {text_var} = {field} VAR {length_var} = LEN({text_var}) '
+                    f'RETURN IF(ISBLANK({text_var}), BLANK(), '
+                    f'IF({length_var} = 0, {empty_result}, {nonempty_check})))'
                 )
 
         # [0-9] / \\d → contains any digit
@@ -2760,31 +2810,25 @@ def _convert_regexp_match(dax):
             )
             return f'({digit_checks})'
 
-        # [a-z] → contains any lowercase letter
-        if pat == '[a-z]':
-            return (
-                f'/* [a-z]: contains lowercase letter */ '
-                f'OR(AND(CODE(MID({field}, 1, 1)) >= 97, CODE(MID({field}, 1, 1)) <= 122), '
-                f'CONTAINSSTRING({field}, " ")) '
-                f'/* simplified — verify manually */'
-            )
-
-        # [A-Z] → contains any uppercase letter
-        if pat == '[A-Z]':
-            return (
-                f'/* [A-Z]: contains uppercase letter */ '
-                f'OR(AND(CODE(MID({field}, 1, 1)) >= 65, CODE(MID({field}, 1, 1)) <= 90), '
-                f'CONTAINSSTRING({field}, " ")) '
-                f'/* simplified — verify manually */'
-            )
-
-        # General [X-Y] character class (contains check)
-        cc_contains = re.match(r'^\[([a-zA-Z0-9\-]+)\]$', pat)
-        if cc_contains:
-            cc_body = cc_contains.group(1)
-            code_check = _char_class_to_code_check(cc_body, f'MID({field}, 1, 1)')
-            if code_check:
-                return f'/* [{cc_body}]: character class check */ {code_check}'
+        contains_class = re.fullmatch(r'\[([a-zA-Z0-9_-]+)\]', pat)
+        if contains_class:
+            prefix = '__TableauRegex'
+            while prefix.casefold() in dax.casefold():
+                prefix = '_' + prefix
+            text_var = prefix + 'Text'
+            length_var = prefix + 'Length'
+            char_check = _char_class_to_code_check(
+                contains_class.group(1), f'MID({text_var}, {value_column_ref}, 1)',
+                code_function='UNICODE')
+            if char_check:
+                matching_char = (
+                    f'COUNTROWS(FILTER(GENERATESERIES(1, {length_var}), '
+                    f'{char_check})) > 0')
+                return (
+                    f'(VAR {text_var} = {field} VAR {length_var} = LEN({text_var}) '
+                    f'RETURN IF(ISBLANK({text_var}), BLANK(), '
+                    f'IF({length_var} = 0, FALSE(), {matching_char})))'
+                )
 
         # pat1|pat2|...  → OR of CONTAINSSTRING (only if each branch is simple)
         if '|' in pat and not any(ch in pat for ch in r'.+?*[](){}\^$' if ch != '|'):
@@ -2989,6 +3033,12 @@ def _convert_regexp_replace(dax):
 
         # Keep replacement as-is (with quotes)
         repl = raw_repl
+
+        # A single optional character in the HTTP scheme expands to two
+        # disjoint literal matches, so SUBSTITUTE preserves global replacement.
+        if pat == 'https?://':
+            https = f'SUBSTITUTE({field}, "https://", {repl})'
+            return f'SUBSTITUTE({https}, "http://", {repl})'
 
         # Simple literal — direct SUBSTITUTE
         if _is_simple_literal(pat):

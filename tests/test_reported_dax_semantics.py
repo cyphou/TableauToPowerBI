@@ -1129,6 +1129,99 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
             r'DAX conversion failed: MAKEPOINT has no scalar DAX equivalent',
         )
 
+    def test_tableau_escaped_quote_is_serialized_as_dax_measure(self):
+        calculation = {
+            "name": "[Label]", "caption": "Label", "role": "measure",
+            "datatype": "string", "formula": r"'it\'s ready'",
+            "datasource_name": "Synthetic",
+        }
+        datasource = {
+            "name": "Synthetic", "caption": "Synthetic",
+            "connection": {"type": "sqlserver", "details": {
+                "server": "synthetic.invalid", "database": "synthetic",
+            }},
+            "tables": [{"name": "Sales", "columns": [
+                {"name": "Amount", "datatype": "real"}]}],
+            "calculations": [calculation], "columns": [], "relationships": [],
+            "connection_map": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary) / "Synthetic.SemanticModel"
+            generate_tmdl([datasource], "Synthetic", {"calculations": [calculation]},
+                          str(model_dir), parameterize=False)
+            content = (model_dir / "definition" / "tables" / "Sales.tmdl").read_text(
+                encoding="utf-8")
+        measure = next(line for line in content.splitlines()
+                       if line.strip().startswith('measure Label ='))
+        self.assertIn('"it\'s ready"', measure)
+        self.assertNotIn(_FALLBACK, measure)
+
+    def test_anchored_slug_regex_generates_clean_calculated_column_tmdl(self):
+        calculation = {
+            "name": "[Calc_HasValidUTM]", "caption": "Has Valid UTM",
+            "role": "dimension", "datatype": "boolean",
+            "formula": 'REGEXP_MATCH([utm_campaign], "^[a-z0-9_-]+$")',
+            "datasource_name": "Synthetic",
+        }
+        datasource = {
+            "name": "Synthetic", "caption": "Synthetic",
+            "connection": {"type": "sqlserver", "details": {
+                "server": "synthetic.invalid", "database": "synthetic",
+            }},
+            "tables": [{"name": "Campaigns", "columns": [
+                {"name": "utm_campaign", "datatype": "string"}]}],
+            "calculations": [calculation], "columns": [], "relationships": [],
+            "connection_map": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary) / "Synthetic.SemanticModel"
+            generate_tmdl(
+                [datasource], "Synthetic", {"calculations": [calculation]},
+                str(model_dir), parameterize=False,
+            )
+            content = (model_dir / "definition" / "tables" / "Campaigns.tmdl").read_text(
+                encoding="utf-8")
+        column = content.split("\tcolumn 'Has Valid UTM' = ", 1)[1].split("\n", 1)[0]
+        self.assertIn('GENERATESERIES', column)
+        self.assertIn("'Campaigns'[utm_campaign]", column)
+        self.assertIn('MID(__TableauRegexText, [Value], 1)', column)
+        self.assertNotIn("'Campaigns'[Value]", column)
+        self.assertNotIn('verify manually', column)
+        self.assertNotIn('placeholder column created to satisfy missing reference', content)
+
+    def test_unanchored_class_regex_generates_clean_calculated_column_tmdl(self):
+        calculation = {
+            "name": "[Calc_HasLowercase]", "caption": "Has Lowercase",
+            "role": "dimension", "datatype": "boolean",
+            "formula": 'REGEXP_MATCH([campaign], "[a-z]")',
+            "datasource_name": "Synthetic",
+        }
+        datasource = {
+            "name": "Synthetic", "caption": "Synthetic",
+            "connection": {"type": "sqlserver", "details": {
+                "server": "synthetic.invalid", "database": "synthetic",
+            }},
+            "tables": [{"name": "Campaigns", "columns": [
+                {"name": "campaign", "datatype": "string"}]}],
+            "calculations": [calculation], "columns": [], "relationships": [],
+            "connection_map": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary) / "Synthetic.SemanticModel"
+            generate_tmdl(
+                [datasource], "Synthetic", {"calculations": [calculation]},
+                str(model_dir), parameterize=False,
+            )
+            content = (model_dir / "definition" / "tables" / "Campaigns.tmdl").read_text(
+                encoding="utf-8")
+        column = content.split("\tcolumn 'Has Lowercase' = ", 1)[1].split("\n", 1)[0]
+        self.assertIn('GENERATESERIES', column)
+        self.assertIn('UNICODE', column)
+        self.assertIn('[Value]', column)
+        self.assertNotIn("'Campaigns'[Value]", column)
+        self.assertNotIn('verify manually', column)
+        self.assertNotIn('placeholder column created to satisfy missing reference', content)
+
     def test_explicit_fixed_scope_compiles_through_full_tmdl_generation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

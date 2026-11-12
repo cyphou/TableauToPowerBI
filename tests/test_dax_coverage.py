@@ -34,6 +34,7 @@ from dax_converter import (
     _fix_date_literals,
     _normalize_spaces_outside_identifiers,
     _split_args,
+    _strip_tableau_comments,
     convert_tableau_formula_to_dax,
     generate_combined_field_dax,
 )
@@ -624,6 +625,24 @@ class TestRunningFunctions(unittest.TestCase):
             table_name="Owned By", validate_output=True, fallback_on_invalid=True)
         self.assertIn("https://example.test/item/", result)
         self.assertNotIn("TODO: DAX conversion validation failed", result)
+
+    def test_comment_markers_in_source_field_names_survive_conversion(self):
+        for field in ("Amount // USD", "Amount /* USD"):
+            with self.subTest(field=field):
+                result = convert_tableau_formula_to_dax(
+                    f"SUM([{field}]) // source comment",
+                    table_name="Sales", table_columns=[field],
+                    column_table_map={field: "Sales"},
+                    validate_output=True, fallback_on_invalid=True)
+                self.assertEqual(result, f"SUM('Sales'[{field}])")
+                self.assertEqual(validate_dax_expression(result), [])
+
+    def test_comment_scanner_distinguishes_tableau_and_dax_escapes(self):
+        tableau = "'it\\'s // text' // comment"
+        self.assertEqual(_strip_tableau_comments(tableau), "'it\\'s // text' ")
+        dax = '"C:\\" // comment'
+        self.assertEqual(_strip_tableau_comments(
+            dax, keep_block_comments=True, tableau_string_escapes=False), '"C:\\" ')
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1229,16 +1248,20 @@ class TestRegexpMatchCharacterClass(unittest.TestCase):
     """Sprint 23.1 — REGEXP_MATCH character class expansion."""
 
     def test_digits_only_full_match(self):
-        """^[0-9]+$ → ISNUMBER(VALUE(field))."""
+        """^[0-9]+$ checks every character, rejecting signs and decimals."""
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([ZipCode], "^[0-9]+$")')
-        self.assertIn('ISNUMBER', result)
-        self.assertIn('VALUE', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertNotIn('ISNUMBER', result)
+        self.assertNotIn('verify manually', result)
         self.assertNotIn('REGEXP_MATCH', result.split('*/')[0] if '*/' in result else '')
 
     def test_digits_shorthand_full_match(self):
-        """^\\d+$ → ISNUMBER(VALUE(field))."""
+        """^\\d+$ normalizes to the exact ASCII digit class check."""
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([Code], "^\\d+$")')
-        self.assertIn('ISNUMBER', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertNotIn('ISNUMBER', result)
 
     def test_contains_digit(self):
         """[0-9] → OR of CONTAINSSTRING for each digit."""
@@ -1253,25 +1276,33 @@ class TestRegexpMatchCharacterClass(unittest.TestCase):
         self.assertIn('CONTAINSSTRING', result)
 
     def test_alpha_full_match(self):
-        """^[a-zA-Z]+$ → CODE-based check with comment."""
+        """^[a-zA-Z]+$ uses an exact full-string character check."""
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([Name], "^[a-zA-Z]+$")')
-        self.assertIn('[a-zA-Z]', result)  # In comment
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertNotIn('verify manually', result)
 
     def test_general_char_class_contains(self):
-        """[a-z] → CODE-based check."""
+        """[a-z] scans the full source string case-sensitively."""
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([Name], "[a-z]")')
-        self.assertIn('CODE', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertNotIn('verify manually', result)
 
     def test_uppercase_class_contains(self):
-        """[A-Z] → CODE-based check."""
+        """[A-Z] scans the full source string case-sensitively."""
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([Name], "[A-Z]")')
-        self.assertIn('CODE', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertNotIn('verify manually', result)
 
     def test_general_bracket_class(self):
-        """[a-z0-9] → CODE-based check."""
+        """[a-z0-9] scans all source characters for an exact class match."""
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([Name], "[a-z0-9]")')
-        self.assertIn('CODE', result)
-        self.assertIn('||', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('UNICODE', result)
+        self.assertIn('> 0', result)
+        self.assertNotIn('verify manually', result)
 
     def test_existing_left_match_still_works(self):
         """^literal → LEFT match must not regress."""

@@ -279,15 +279,12 @@ def validate_dax_expression(expr: str) -> List[str]:
     if not expr or not str(expr).strip():
         return ['empty DAX expression']
 
-    text = _strip_comments(str(expr))
+    text, block_comments, unterminated_comment = _scan_comments(str(expr))
     issues: List[str] = []
-    original = str(expr)
-    if '/*' in original and '*/' not in original:
+    if unterminated_comment:
         issues.append('unterminated block comment')
-    # A syntactically valid BLANK fallback is not a successful conversion.
-    # Mask literals/identifiers so a quoted example is not a diagnostic.
-    if re.search(r'/\*\s*TODO:\s*DAX conversion validation failed\b',
-                 mask_literal_spans(original), re.IGNORECASE):
+    if any(re.match(r'/\*\s*TODO:\s*DAX conversion validation failed\b',
+                    comment, re.IGNORECASE) for comment in block_comments):
         issues.append('unsupported DAX conversion placeholder')
     issues.extend(_check_quotes(text))
     issues.extend(_check_balanced(text))
@@ -304,31 +301,46 @@ def validate_dax_expression(expr: str) -> List[str]:
 
 
 def _strip_comments(text: str) -> str:
-    """Remove DAX comments while preserving comment-like text in strings."""
+    """Remove DAX comments while preserving literals and identifiers."""
+    return _scan_comments(text)[0]
+
+
+def _scan_comments(text: str):
     out = []
+    block_comments = []
     i = 0
-    in_string = False
+    unterminated = False
     while i < len(text):
-        if text[i] == '"':
-            out.append(text[i])
-            if in_string and i + 1 < len(text) and text[i + 1] == '"':
-                out.append(text[i + 1])
-                i += 2
-                continue
-            in_string = not in_string
+        if text[i] in ('"', "'", '['):
+            closer = {'"': '"', "'": "'", '[': ']'}[text[i]]
+            start = i
             i += 1
+            while i < len(text):
+                if text[i] == closer:
+                    i += 1
+                    if i < len(text) and text[i] == closer:
+                        i += 1
+                        continue
+                    break
+                i += 1
+            out.append(text[start:i])
             continue
-        if not in_string and text.startswith('//', i):
+        if text.startswith('//', i):
             newline = text.find('\n', i)
             i = len(text) if newline < 0 else newline
             continue
-        if not in_string and text.startswith('/*', i):
+        if text.startswith('/*', i):
             end = text.find('*/', i + 2)
-            i = len(text) if end < 0 else end + 2
+            if end < 0:
+                unterminated = True
+                block_comments.append(text[i:])
+                break
+            block_comments.append(text[i:end + 2])
+            i = end + 2
             continue
         out.append(text[i])
         i += 1
-    return ''.join(out)
+    return ''.join(out), block_comments, unterminated
 
 
 class DaxExpressionValidator:

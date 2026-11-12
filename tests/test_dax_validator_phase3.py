@@ -72,6 +72,31 @@ class TestDaxValidatorPhase3(unittest.TestCase):
         issues = validate_dax_expression("/* comment */ SUM([A])")
         self.assertEqual(issues, [])
 
+    def test_comment_markers_inside_identifiers_are_not_comments(self):
+        for expression in (
+            "SUM('Sales // Local'[Amount])",
+            "SUM('Sales'[Amount // USD])",
+            "SUM('Sales'[Amount /* USD])",
+            "SUM('O''Brien /* Local'[Amount]]) USD])",
+        ):
+            with self.subTest(expression=expression):
+                self.assertEqual(validate_dax_expression(expression), [])
+
+    def test_placeholder_after_comment_with_apostrophe_is_blocking(self):
+        expression = ("/* author's note */ "
+                      "/* TODO: DAX conversion validation failed for measure: "
+                      "unverified grain */ BLANK()")
+        self.assertIn('unsupported DAX conversion placeholder',
+                      validate_dax_expression(expression))
+
+    def test_placeholder_inside_identifier_is_not_a_comment(self):
+        expression = "SUM('Sales'[/* TODO: DAX conversion validation failed */])"
+        self.assertEqual(validate_dax_expression(expression), [])
+
+    def test_unterminated_comment_after_closed_comment_is_detected(self):
+        expression = '/* closed */ SUM([A]) /* incomplete'
+        self.assertIn('unterminated block comment', validate_dax_expression(expression))
+
     def test_apostrophe_inside_bracketed_identifier_is_valid(self):
         # Column/measure names may contain apostrophes; they are NOT single-quote
         # delimiters. Regression for real-world [% ou Nombre d 'appel] false positives.

@@ -137,6 +137,62 @@ class TestRegexpMatchExactMatch(unittest.TestCase):
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([Name], "^.+$")')
         self.assertIn('LEN', result)
 
+    def test_anchored_lowercase_slug_uses_case_sensitive_character_codes(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        result = convert_tableau_formula_to_dax(
+            'REGEXP_MATCH([utm_campaign], "^[a-z0-9_-]+$")',
+            table_name='Campaigns', table_columns=['utm_campaign'],
+            column_table_map={'utm_campaign': 'Campaigns'},
+            is_calc_column=True, validate_output=True, fallback_on_invalid=True)
+        self.assertIn('GENERATESERIES(1, __TableauRegexLength)', result)
+        self.assertIn('UNICODE(MID(__TableauRegexText, [Value], 1))', result)
+        self.assertNotIn("'Campaigns'[Value]", result)
+        self.assertIn('>= 97', result)
+        self.assertIn('<= 122', result)
+        self.assertIn('= 95', result)
+        self.assertIn('= 45', result)
+        self.assertIn('IF(__TableauRegexLength = 0, FALSE()', result)
+        self.assertIn('ISBLANK(__TableauRegexText), BLANK()', result)
+        self.assertNotIn('CONTAINSSTRING', result)
+        self.assertNotIn('verify manually', result)
+        self.assertNotIn('TODO: DAX conversion validation failed', result)
+        self.assertEqual(validate_dax_expression(result), [])
+
+    def test_nearby_regex_patterns_remain_manual(self):
+        for pattern in ('^[a-z0-9_-]+[A-Z]$', '[a-z0-9_-]+'):
+            with self.subTest(pattern=pattern):
+                result = convert_tableau_formula_to_dax(
+                    f'REGEXP_MATCH([utm_campaign], "{pattern}")')
+                self.assertIn('verify manually', result)
+
+    def test_anchored_star_class_accepts_empty_text(self):
+        result = convert_tableau_formula_to_dax(
+            'REGEXP_MATCH([utm_campaign], "^[a-z0-9_-]*$")',
+            table_name='Campaigns', table_columns=['utm_campaign'],
+            column_table_map={'utm_campaign': 'Campaigns'},
+            is_calc_column=True, validate_output=True, fallback_on_invalid=True)
+        self.assertIn('IF(__TableauRegexLength = 0, TRUE()', result)
+        self.assertIn('GENERATESERIES', result)
+        self.assertNotIn('verify manually', result)
+        self.assertNotIn('TODO: DAX conversion validation failed', result)
+
+    def test_unanchored_lowercase_class_checks_all_characters(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        result = convert_tableau_formula_to_dax(
+            'REGEXP_MATCH([Name], "[a-z]")',
+            table_name='Campaigns', table_columns=['Name'],
+            column_table_map={'Name': 'Campaigns'},
+            is_calc_column=True, validate_output=True, fallback_on_invalid=True)
+        self.assertIn('GENERATESERIES', result)
+        self.assertIn('FILTER(GENERATESERIES', result)
+        self.assertIn('UNICODE(MID(__TableauRegexText, [Value], 1))', result)
+        self.assertNotIn("'Campaigns'[Value]", result)
+        self.assertIn('> 0', result)
+        self.assertNotIn('verify manually', result)
+        self.assertEqual(validate_dax_expression(result), [])
+
     def test_left_match_still_works(self):
         """Existing ^literal pattern still works."""
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([Code], "^ABC")')
