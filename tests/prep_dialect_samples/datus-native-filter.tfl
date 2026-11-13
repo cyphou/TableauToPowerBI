@@ -1,0 +1,386 @@
+{
+  "parameters": {
+    "parameters": {}
+  },
+  "initialNodes": [
+    "98d1432e-1201-4953-86b6-872a0a660bd6",
+    "e31f721a-0392-47de-baeb-5d3789cca327"
+  ],
+  "nodes": {
+    "98d1432e-1201-4953-86b6-872a0a660bd6": {
+      "nodeType": ".v1.LoadCsv",
+      "name": "demo_regions",
+      "id": "98d1432e-1201-4953-86b6-872a0a660bd6",
+      "baseType": "input",
+      "nextNodes": [
+        {
+          "namespace": "Default",
+          "nextNodeId": "2ff318b0-4182-4b69-a26f-f70b9e56fc4e",
+          "nextNamespace": "Right"
+        }
+      ],
+      "serialize": false,
+      "description": null,
+      "connectionId": "f4fb8272-f2c3-48c3-8300-57ecea5df205",
+      "connectionAttributes": {},
+      "fields": [
+        {
+          "name": "Region",
+          "type": "string",
+          "collation": "LEN_RUS",
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        },
+        {
+          "name": "Market",
+          "type": "string",
+          "collation": "LEN_RUS",
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        }
+      ],
+      "actions": [],
+      "debugModeRowLimit": 393216,
+      "originalDataTypes": {},
+      "randomSampling": null,
+      "updateTimestamp": 1794022209290,
+      "restrictedFields": {},
+      "userRenamedFields": {},
+      "selectedFields": null,
+      "samplingType": null,
+      "groupByFields": null,
+      "filters": [],
+      "separator": ",",
+      "locale": "en_US",
+      "charSet": "UTF-8",
+      "containsHeaders": true,
+      "textQualifier": "A"
+    },
+    "e31f721a-0392-47de-baeb-5d3789cca327": {
+      "nodeType": ".v1.LoadCsv",
+      "name": "demo_orders",
+      "id": "e31f721a-0392-47de-baeb-5d3789cca327",
+      "baseType": "input",
+      "nextNodes": [
+        {
+          "namespace": "Default",
+          "nextNodeId": "e9687fe7-c904-4b4c-b477-739fb60e0a69",
+          "nextNamespace": "Default"
+        }
+      ],
+      "serialize": false,
+      "description": null,
+      "connectionId": "013cb0c0-7408-46dc-8722-b6b5dad6b300",
+      "connectionAttributes": {},
+      "fields": [
+        {
+          "name": "OrderId",
+          "type": "integer",
+          "collation": null,
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        },
+        {
+          "name": "Region",
+          "type": "string",
+          "collation": "LEN_RUS",
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        },
+        {
+          "name": "Amount",
+          "type": "integer",
+          "collation": null,
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        },
+        {
+          "name": "Cost",
+          "type": "integer",
+          "collation": null,
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        },
+        {
+          "name": "Quantity",
+          "type": "integer",
+          "collation": null,
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        },
+        {
+          "name": "Status",
+          "type": "string",
+          "collation": "LEN_RUS",
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        },
+        {
+          "name": "OrderDate",
+          "type": "date",
+          "collation": null,
+          "caption": null,
+          "ordinal": null,
+          "isGenerated": false,
+          "prettifiedName": null
+        }
+      ],
+      "actions": [],
+      "debugModeRowLimit": 393216,
+      "originalDataTypes": {},
+      "randomSampling": null,
+      "updateTimestamp": 1794022209290,
+      "restrictedFields": {},
+      "userRenamedFields": {},
+      "selectedFields": null,
+      "samplingType": null,
+      "groupByFields": null,
+      "filters": [],
+      "separator": ",",
+      "locale": "en_US",
+      "charSet": "UTF-8",
+      "containsHeaders": true,
+      "textQualifier": "A"
+    },
+    "e9687fe7-c904-4b4c-b477-739fb60e0a69": {
+      "nodeType": ".v1.Container",
+      "name": "Clean 1",
+      "id": "e9687fe7-c904-4b4c-b477-739fb60e0a69",
+      "baseType": "container",
+      "nextNodes": [
+        {
+          "namespace": "Default",
+          "nextNodeId": "2ff318b0-4182-4b69-a26f-f70b9e56fc4e",
+          "nextNamespace": "Left"
+        }
+      ],
+      "serialize": false,
+      "description": null,
+      "loomContainer": {
+        "parameters": {
+          "parameters": {}
+        },
+        "initialNodes": [
+          "93cab857-de36-4c59-becb-2055fb2f9fb2"
+        ],
+        "nodes": {
+          "212ae3d1-783e-4b74-bd57-88108ca03cfa": {
+            "nodeType": ".v1.FilterOperation",
+            "name": "Filter",
+            "id": "212ae3d1-783e-4b74-bd57-88108ca03cfa",
+            "baseType": "transform",
+            "nextNodes": [],
+            "serialize": false,
+            "description": null,
+            "filterExpression": "[Status] = 'Completed'"
+          },
+          "93cab857-de36-4c59-becb-2055fb2f9fb2": {
+            "nodeType": ".v1.AddColumn",
+            "columnName": "NetSales",
+            "expression": "IFNULL([Amount], 0) - [Cost]",
+            "name": "Add NetSales",
+            "id": "93cab857-de36-4c59-becb-2055fb2f9fb2",
+            "baseType": "transform",
+            "nextNodes": [
+              {
+                "namespace": "Default",
+                "nextNodeId": "212ae3d1-783e-4b74-bd57-88108ca03cfa",
+                "nextNamespace": "Default"
+              }
+            ],
+            "serialize": false,
+            "description": null
+          }
+        },
+        "connections": {},
+        "dataConnections": {},
+        "connectionIds": [],
+        "dataConnectionIds": [],
+        "nodeProperties": {},
+        "extensibility": null
+      },
+      "namespacesToInput": {
+        "Default": {
+          "nodeId": "93cab857-de36-4c59-becb-2055fb2f9fb2",
+          "namespace": "Default"
+        }
+      },
+      "namespacesToOutput": {
+        "Default": {
+          "nodeId": "212ae3d1-783e-4b74-bd57-88108ca03cfa",
+          "namespace": "Default"
+        }
+      },
+      "providedParameters": null
+    },
+    "2ff318b0-4182-4b69-a26f-f70b9e56fc4e": {
+      "nodeType": ".v2018_2_3.SuperJoin",
+      "name": "Join 1",
+      "id": "2ff318b0-4182-4b69-a26f-f70b9e56fc4e",
+      "baseType": "superNode",
+      "nextNodes": [
+        {
+          "namespace": "Default",
+          "nextNodeId": "262fba28-d342-4792-be55-2f7b0509c5d2",
+          "nextNamespace": "Default"
+        }
+      ],
+      "serialize": false,
+      "description": null,
+      "beforeActionAnnotations": [],
+      "afterActionAnnotations": [],
+      "actionNode": {
+        "nodeType": ".v1.SimpleJoin",
+        "name": "Join 1",
+        "id": "9f2ee113-71e5-40a1-8626-3b99cb920443",
+        "baseType": "transform",
+        "nextNodes": [],
+        "serialize": false,
+        "description": null,
+        "conditions": [
+          {
+            "leftExpression": "[Region]",
+            "rightExpression": "[Region]",
+            "comparator": "=="
+          }
+        ],
+        "joinType": "inner"
+      }
+    },
+    "262fba28-d342-4792-be55-2f7b0509c5d2": {
+      "nodeType": ".v2018_2_3.SuperAggregate",
+      "name": "Aggregate 1",
+      "id": "262fba28-d342-4792-be55-2f7b0509c5d2",
+      "baseType": "superNode",
+      "nextNodes": [
+        {
+          "namespace": "Default",
+          "nextNodeId": "d69f679a-76a1-412c-99bb-120da0f44991",
+          "nextNamespace": "Default"
+        }
+      ],
+      "serialize": false,
+      "description": null,
+      "beforeActionAnnotations": [],
+      "afterActionAnnotations": [],
+      "actionNode": {
+        "nodeType": ".v1.Aggregate",
+        "name": "Aggregate 1",
+        "id": "e57fb189-a1d7-49e9-b02f-1dbf4c2dca7f",
+        "baseType": "transform",
+        "nextNodes": [],
+        "serialize": false,
+        "description": null,
+        "groupByFields": [
+          {
+            "columnName": "Region",
+            "function": "GroupBy",
+            "newColumnName": null,
+            "specialFieldType": null
+          },
+          {
+            "columnName": "Market",
+            "function": "GroupBy",
+            "newColumnName": null,
+            "specialFieldType": null
+          }
+        ],
+        "aggregateFields": [
+          {
+            "columnName": "Amount",
+            "function": "SUM",
+            "newColumnName": null,
+            "specialFieldType": null
+          },
+          {
+            "columnName": "Cost",
+            "function": "SUM",
+            "newColumnName": null,
+            "specialFieldType": null
+          },
+          {
+            "columnName": "NetSales",
+            "function": "SUM",
+            "newColumnName": null,
+            "specialFieldType": null
+          },
+          {
+            "columnName": "Quantity",
+            "function": "SUM",
+            "newColumnName": null,
+            "specialFieldType": null
+          }
+        ]
+      }
+    },
+    "d69f679a-76a1-412c-99bb-120da0f44991": {
+      "nodeType": ".v1.PublishExtract",
+      "name": "Output",
+      "id": "d69f679a-76a1-412c-99bb-120da0f44991",
+      "baseType": "output",
+      "nextNodes": [],
+      "serialize": false,
+      "description": null,
+      "projectName": "SyntheticProject",
+      "projectLuid": "synthetic-project",
+      "datasourceName": "SyntheticOutput",
+      "datasourceDescription": "",
+      "serverUrl": "https://tableau.example.test/#/site/synthetic"
+    }
+  },
+  "connections": {
+    "013cb0c0-7408-46dc-8722-b6b5dad6b300": {
+      "connectionType": ".v1.SqlConnection",
+      "id": "013cb0c0-7408-46dc-8722-b6b5dad6b300",
+      "name": "demo_orders.csv",
+      "isPackaged": true,
+      "connectionAttributes": {
+        "filename": "demo_orders.csv",
+        "class": "textscan"
+      }
+    },
+    "f4fb8272-f2c3-48c3-8300-57ecea5df205": {
+      "connectionType": ".v1.SqlConnection",
+      "id": "f4fb8272-f2c3-48c3-8300-57ecea5df205",
+      "name": "demo_regions.csv",
+      "isPackaged": true,
+      "connectionAttributes": {
+        "filename": "demo_regions.csv",
+        "class": "textscan"
+      }
+    }
+  },
+  "dataConnections": {},
+  "connectionIds": [
+    "013cb0c0-7408-46dc-8722-b6b5dad6b300",
+    "f4fb8272-f2c3-48c3-8300-57ecea5df205"
+  ],
+  "dataConnectionIds": [],
+  "nodeProperties": {
+    "98d1432e-1201-4953-86b6-872a0a660bd6": {},
+    "e31f721a-0392-47de-baeb-5d3789cca327": {}
+  },
+  "extensibility": {},
+  "selection": [],
+  "majorVersion": 1,
+  "minorVersion": 3,
+  "documentId": "8e22852d-69a3-4df2-91c5-e60230c3063f",
+  "obfuscatorId": "7ffcc7d6-280d-4af2-8916-6e17558258fe",
+  "performanceSettings": {}
+}

@@ -13,6 +13,7 @@ Query M. Append/null-fill/duplicate and row-order runtime behavior is therefore
 """
 
 import io
+import hashlib
 import json
 import os
 import re
@@ -37,6 +38,8 @@ from tests.prep_flow_fixtures import write_flow
 
 REAL_WORLD_FLOW = ROOT / 'examples' / 'real_world' / 'tableau_prep_book.tfl'
 REAL_WORLD_SOURCES = ROOT / 'examples' / 'real_world' / 'SOURCES.md'
+PUBLIC_PREP_MANIFEST = ROOT / 'tests' / 'prep_dialect_samples' / 'public_corpus_manifest.json'
+DATUS_SIMPLE_JOIN_FLOW = ROOT / 'tests' / 'prep_dialect_samples' / 'datus-native-filter.tfl'
 
 NS_WEST = 'Union-Namespace-synthetic-west'
 NS_EAST = 'Union-Namespace-synthetic-east'
@@ -626,6 +629,49 @@ class TestSimpleUnionProducerEvidence(unittest.TestCase):
 
 
 class TestSimpleJoinSafety(unittest.TestCase):
+    def test_pinned_datus_join_without_policy_remains_blocked(self):
+        manifest = json.loads(PUBLIC_PREP_MANIFEST.read_text(encoding='utf-8'))
+        source, = [entry for entry in manifest['inputs']
+                   if entry['filename'] == DATUS_SIMPLE_JOIN_FLOW.name]
+        self.assertEqual(source['repository'], 'Datus-ai/Datus-Plugins')
+        self.assertEqual(source['license'], 'Apache-2.0')
+        self.assertEqual(
+            hashlib.sha256(DATUS_SIMPLE_JOIN_FLOW.read_bytes()).hexdigest(),
+            source['sha256'])
+        license_file = DATUS_SIMPLE_JOIN_FLOW.parent / source['license_file']
+        self.assertEqual(
+            hashlib.sha256(license_file.read_bytes()).hexdigest(),
+            source['license_sha256'])
+        self.assertIn('Apache License', license_file.read_text(encoding='utf-8'))
+
+        flow = json.loads(DATUS_SIMPLE_JOIN_FLOW.read_text(encoding='utf-8'))
+        joins = [node for node in flow['nodes'].values()
+                 if node.get('nodeType') == '.v2018_2_3.SuperJoin']
+        self.assertEqual(len(joins), 1)
+        join, = joins
+        self.assertNotIn('fields', join)
+        self.assertNotIn('fields', join['actionNode'])
+        self.assertEqual(join['actionNode']['nodeType'], '.v1.SimpleJoin')
+        self.assertEqual(join['actionNode']['joinType'], 'inner')
+        self.assertEqual(join['actionNode']['conditions'], [{
+            'leftExpression': '[Region]',
+            'rightExpression': '[Region]',
+            'comparator': '==',
+        }])
+        incoming_namespaces = [
+            edge['nextNamespace']
+            for node in flow['nodes'].values()
+            for edge in node.get('nextNodes', [])
+            if edge.get('nextNodeId') == join['id']
+        ]
+        self.assertCountEqual(incoming_namespaces, ['Left', 'Right'])
+
+        with self.assertRaisesRegex(
+                ValueError,
+                r'SimpleJoin .*semantics evidence policy is required'):
+            with redirect_stdout(io.StringIO()):
+                parse_prep_flow(str(DATUS_SIMPLE_JOIN_FLOW))
+
     def test_before_annotations_run_on_explicit_branches_in_list_order(self):
         flow = _simple_join_flow()
         join = flow['nodes']['join']

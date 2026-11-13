@@ -511,10 +511,8 @@ class TestPrepMigrationReport(unittest.TestCase):
         self.assertNotIn("'real', 'string'", serialized)
         self.assertIn('union_schema_conflict', html)
 
-    def test_missing_join_projection_has_specific_sanitized_blocker(self):
-        failure = ("Prep SimpleJoin 'private-id': source-declared nonempty "
-                   'fields projection is required; the observed public payload '
-                   'has no output schema/projection')
+    def test_not_inner_projection_requirement_has_specific_blocker(self):
+        failure = 'Prep notInner requires a SimpleJoin with an explicit output projection'
         with tempfile.TemporaryDirectory() as directory:
             paths = migrate._write_prep_query_migration_report(
                 directory, 'PublicFlow', 'public.tfl',
@@ -523,7 +521,6 @@ class TestPrepMigrationReport(unittest.TestCase):
             report = json.loads(Path(paths['json']).read_text(encoding='utf-8'))
         self.assertEqual(report['blockers'][0]['code'], 'join_projection_missing')
         self.assertEqual(report['queries'][0]['blocker_codes'], ['join_projection_missing'])
-        self.assertNotIn('private-id', json.dumps(report))
 
     def test_colliding_output_names_remain_distinct_in_blocked_batch_report(self):
         profile = self.profile({'Orders_A': 'let Source = 1 in Source'})

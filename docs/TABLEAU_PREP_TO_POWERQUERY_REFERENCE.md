@@ -128,15 +128,29 @@ parity or native refresh. See Tableau's
 and Microsoft's
 [Text.Split reference](https://learn.microsoft.com/en-us/powerquery-m/text-split).
 
-The public flow now reaches its mapped union and fails on the `Discount` field's
-incompatible `real` and `string` input types; no cast is inferred and no M is
-published. Independently, its `SimpleJoin` has no output schema/projection, so
-conversion remains blocked rather than projecting every input field by
-assumption. Calculated/qualified join-key expressions, non-equality
-comparators, ambiguous field collisions and inferred sides are also rejected.
-Reduced producer-backed tests isolate the union mismatch and missing join
-projection; synthetic M/schema tests do not establish native refresh or value
-parity.
+The Loth public flow reaches its mapped union and fails on the `Discount`
+field's incompatible `real` and `string` input types; no cast is inferred and no
+M is published. A separate pinned Apache-2.0 Datus flow records an inner
+`SimpleJoin` on `[Region] == [Region]` with `Left`/`Right` edge namespaces and
+no declared output projection. When source schemas are available, the parser
+derives the documented default projection (all left fields plus right-side
+non-key fields); it does not pretend the schema is missing. The Datus migration
+still blocks with `simple_join_semantics_unverified` when no operator policy is
+provided. The fixture proves this producer shape and fail-closed gate, not
+comparison, null-key, duplicate-match or runtime behavior. Its CSV inputs are
+synthetic and are not included. Calculated/qualified join-key expressions,
+non-equality comparators, ambiguous field collisions and inferred sides remain
+rejected.
+
+Tableau's [union guidance](https://help.tableau.com/current/prep/en-us/prep_combine.htm)
+says Prep may change a same-name field's type to make union inputs compatible,
+but warns that the default choice can be wrong. The Loth flow records the input
+types, but no final union type or cast; its referenced `Orders_Central.csv` and
+`orders_south_2015.csv` files are not included in the repository or available
+locally. Therefore the source semantics do not establish whether parsing the
+string branch as numeric is valid, and the migration must keep this union
+blocked rather than infer a cast. A native Prep result or an authorized source
+data check that records the chosen output type is needed to revisit it.
 
 ### Schema propagation
 
@@ -258,13 +272,14 @@ N1 remains **partial** and #81 is not closed. The supported shapes are narrow:
   `RichDiscreteValueFilter`, `RichWildcardFilter` and `RichNullFilter`, as well
   as other unobserved payload variants.
 
-Do not conflate `QuickCalcColumn RemoveLetters` with a `CleanOperation` whose
-operation is `removeletters`, `removenumbers` or `removepunctuation`. The
-current generic dispatch routes those `CleanOperation` labels through M
-`Text.Clean`, which removes non-printable characters; producer semantics and
-equivalence for those removal operations are not established. Treat them as
-unverified pending a producer-backed mapping and negative controls. Generic
-operation names and analysis classifications alone do not prove convertibility.
+`CleanOperation removeletters` now reuses the bounded Unicode 16.0 letter
+filter used by the producer-backed `QuickCalcColumn RemoveLetters` path. The
+`CleanOperation` payload shape itself still lacks an accepted producer fixture,
+so this dispatch is not producer-verified. `removenumbers` and
+`removepunctuation` are rejected explicitly; neither is mapped to M
+`Text.Clean`, which removes non-printable characters rather than letters,
+numbers or punctuation. Generic operation names and analysis classifications
+alone do not prove convertibility.
 
 No embedded source rows were copied into these fixtures. Unclear-license
 exports and third-party assumed node shapes remain excluded; fixture coverage
@@ -561,9 +576,13 @@ that parser case remains rejected.
 ## 8. Join Step
 
 These examples describe M helpers and the supported explicit join contract.
-They do not establish implicit output projection for the public
-`SuperJoin`/`SimpleJoin` producer variant; a source-declared `fields`
-projection is required.
+They do not establish every producer shape or runtime join behavior. For the
+observed `SuperJoin` / `SimpleJoin` dialect, a nonempty source-declared `fields`
+projection is used when present; otherwise the parser derives all left fields
+plus right-side non-key fields after schema checks. Explicit projection is
+required for `notInner`. All generated joins remain gated on a per-node policy
+for comparison, null-key and duplicate semantics; see the pinned Datus example
+and policy contract above.
 
 | # | Tableau Prep Operation | Power Query M Function | Status | Example |
 |---|----------------------|----------------------|--------|---------|

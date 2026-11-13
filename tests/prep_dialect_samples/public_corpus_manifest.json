@@ -51,6 +51,8 @@
       "commit": "920ffddf6698ec32c1c5ba94b9c93d8dc4c00f8c",
       "path": "datus-tableau-plugin/tests/fixtures/native-filter-flow/flow.tfl",
       "license": "Apache-2.0",
+      "license_file": "DATUS-PLUGINS-LICENSE.txt",
+      "license_sha256": "02ef2dcfcc259849749669149b0806a4857fe9b6cf4b65b45f3dc98b68907eb8",
       "sha256": "6d87b2b2089cfe27f8419fc64ce9016d9e382638b8fe0b54aa1cc0d06c8602c3"
     },
     {

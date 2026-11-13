@@ -1267,8 +1267,48 @@ class TestCleanActionsExtended(unittest.TestCase):
         self.assertIsNotNone(step)
 
     def test_clean_operation_removeletters(self):
-        step = self._step('CleanOperation', {'columnName': 'Code', 'operation': 'removeletters'})
-        self.assertIsNotNone(step)
+        clean_step = self._step('CleanOperation', {
+            'columnName': 'Code', 'operation': 'removeletters'})
+        quick_calc_step = self._step('QuickCalcColumn', {
+            'columnName': 'Code',
+            'calcExpressionType': 'RemoveLetters',
+            'expression': "REGEXP_REPLACE([Code], '[:Letter:]', '')",
+        })
+        self.assertEqual(clean_step, quick_calc_step)
+        self.assertIn('Unicode 16.0 General_Category=Letter', clean_step[1])
+        self.assertIn('Text.ToList', clean_step[1])
+        self.assertNotIn('Text.Clean', clean_step[1])
+
+    def test_clean_action_group_removeletters_uses_unicode_filter(self):
+        steps = _parse_clean_actions({
+            'actionGroup': {'actions': [{
+                'actionType': '.v1.CleanOperation',
+                'columnName': 'Code',
+                'operation': 'removeletters',
+            }]},
+        })
+        self.assertEqual(len(steps), 1)
+        self.assertIn('Unicode 16.0 General_Category=Letter', steps[0][1])
+        self.assertIn('Text.ToList', steps[0][1])
+
+    def test_clean_operation_remove_numbers_and_punctuation_are_blocked(self):
+        for operation in ('removenumbers', 'removepunctuation'):
+            with self.subTest(operation=operation):
+                with self.assertRaisesRegex(ValueError, 'has no verified conversion'):
+                    self._step('CleanOperation', {
+                        'columnName': 'Code', 'operation': operation})
+
+    def test_clean_action_group_blocks_unverified_removals(self):
+        for operation in ('removenumbers', 'removepunctuation'):
+            with self.subTest(operation=operation):
+                with self.assertRaisesRegex(ValueError, 'has no verified conversion'):
+                    _parse_clean_actions({
+                        'actionGroup': {'actions': [{
+                            'actionType': '.v1.CleanOperation',
+                            'columnName': 'Code',
+                            'operation': operation,
+                        }]},
+                    })
 
     def test_clean_operation_no_column(self):
         step = self._step('CleanOperation', {'operation': 'trim'})
@@ -1339,7 +1379,7 @@ class TestCleanActionsExtended(unittest.TestCase):
 
     # --- afterActionGroup ---
     def test_after_action_group_actions(self):
-        """afterActionGroup actions should be included."""
+        """before/action/after groups should be emitted in execution order."""
         node = {
             'baseType': 'transform',
             'nodeType': '.v2018_3_3.SuperTransform',
@@ -1347,13 +1387,18 @@ class TestCleanActionsExtended(unittest.TestCase):
             'beforeActionGroup': {'actions': [
                 {'actionType': '.v1.RemoveColumn', 'columnName': 'Drop1'},
             ]},
+            'actionGroup': {'actions': [
+                {'actionType': '.v1.RemoveColumn', 'columnName': 'DropMid'},
+            ]},
             'afterActionGroup': {'actions': [
                 {'actionType': '.v1.RemoveColumn', 'columnName': 'Drop2'},
             ]},
             'nextNodes': [],
         }
         steps = _parse_clean_actions(node)
-        self.assertEqual(len(steps), 2)
+        self.assertEqual(len(steps), 3)
+        for step, column in zip(steps, ('Drop1', 'DropMid', 'Drop2')):
+            self.assertIn(f'"{column}"', step[1])
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -2593,7 +2593,9 @@ def _prep_report_blocker(error):
     if 'incompatible types' in message:
         return {'code': 'union_schema_conflict',
                 'message': 'Union inputs disagree on a column type; no cast was inferred.'}
-    if 'source-declared nonempty fields projection is required' in message:
+    if ('source-declared nonempty fields projection is required' in message
+            or 'notInner requires a SimpleJoin with an explicit output projection'
+            in message):
         return {'code': 'join_projection_missing',
                 'message': 'Join output projection is not declared; no output schema was inferred.'}
     if 'semantics evidence policy is required before generating the join' in message:

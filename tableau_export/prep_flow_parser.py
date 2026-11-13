@@ -2299,8 +2299,12 @@ def _convert_action_to_m_step(action_type, action, counter):
                 return m_transform_lower([col])
             elif operation == 'proper':
                 return m_transform_proper_case([col])
-            elif operation in ('removeletters', 'removenumbers', 'removepunctuation'):
-                return m_transform_clean([col])
+            elif operation == 'removeletters':
+                return _quick_calc_remove_letters_step(col, counter)
+            elif operation in ('removenumbers', 'removepunctuation'):
+                raise ValueError(
+                    f'Prep CleanOperation {operation!r} has no verified conversion'
+                )
 
     elif action_type == 'FillValues':
         col = action.get('columnName', '')
