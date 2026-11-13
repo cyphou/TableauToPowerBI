@@ -5,7 +5,7 @@
 
 > Standalone frontend sub-steps. Read during **Step 1** (Frontend).
 
-> **Companion contract**: Before JSX, read [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md). It links plan Section 5 (Design System & UI) to shipped JSX: per-library region-token → primitive mapping, brand-ramp theming, real icons, four-state gate. Steps below define *how* to generate/build (working directory, build, verify); quality bar defines *what* it contains. Planning approved `.azure/.preview-temp/`; Step 1 does **not** re-prompt UX approval.
+> **Companion contract**: Before JSX, read [frontend-quality-bar.md](frontend-quality-bar.md). It links plan Section 5 (Design System & UI) to shipped JSX: per-library region-token → primitive mapping, brand-ramp theming, real icons, four-state gate. Steps below define *how* to generate/build (working directory, build, verify); quality bar defines *what* it contains. Planning approved `.azure/.preview-temp/`; Step 1 does **not** re-prompt UX approval.
 
 ---
 
@@ -32,7 +32,7 @@
 
 After scaffolding, `open_frontend_preview_view` opens **Approve UI**, **starts the frontend dev server**, and renders a **VS Code webview iframe**. User clicks **Approve UI** to integrate. If iframe cannot load app, user is **stuck**: normal browser may work while preview is blank/"Starting…" and **Approve UI never enables**. Ensure preview loads:
 
-- **Embeddable, reachable dev server.** In `vite.config`, set `server: { host: true, allowedHosts: true, strictPort: false }` (Angular: `ng serve --host 0.0.0.0 --disable-host-check`; Next.js: `next dev -H 0.0.0.0`). `host: true` enables webview/forwarded-port access (remote, Codespaces, Dev Container, SSH); `allowedHosts: true` prevents forwarded/webview-origin 403; `strictPort: false` allows free port if default is busy. See [architecture.md](.github/agents/shared-references/architecture.md) → Frontend Dev Server Configuration.
+- **Embeddable, reachable dev server.** In `vite.config`, set `server: { host: true, allowedHosts: true, strictPort: false }` (Angular: `ng serve --host 0.0.0.0 --disable-host-check`; Next.js: `next dev -H 0.0.0.0`). `host: true` enables webview/forwarded-port access (remote, Codespaces, Dev Container, SSH); `allowedHosts: true` prevents forwarded/webview-origin 403; `strictPort: false` allows free port if default is busy. See [architecture.md](../../shared-references/architecture.md) → Frontend Dev Server Configuration.
 - **Keep `dev`/`start` a real server.** It prints `http://localhost:<port>/` (plain `vite`, `next dev`, `ng serve`), never `vite build --watch` or build-only script. Preview waits for URL before enabling **Approve UI**; non-serving scripts time out on "Starting…".
 - **Never frame-bust dev server.** No `X-Frame-Options` header or `<meta http-equiv="Content-Security-Policy" content="… frame-ancestors …">` in `index.html`. Either blocks webview iframe while browser tab works.
 - **No competing dev server.** `open_frontend_preview_view` owns one server; scaffold only *builds* (`npm run build`, per F4). Do **not** run `npm run dev` or scaffold folder-open auto-start VS Code task. Second server creates port contention and preview bind failure.
@@ -63,7 +63,7 @@ After scaffolding, `open_frontend_preview_view` opens **Approve UI**, **starts t
 | Create the mock client (an `ApiClient` impl) | `services/web/src/api/mockClient.ts` — `export const mockClient: ApiClient = { … }` implements **every** F1 `ApiClient` method (including reference-data methods), returns `src/mocks/data.ts` with small delays, and satisfies interface for future live-client interchangeability. **Declare mock as `ApiClient`; never derive interface from mock.** `export type ApiClient = typeof mockClient` inverts seam: integrate deletes mock, interface disappears, live client has nothing to implement. |
 | **Create the seam entry (the one file that swaps)** | `services/web/src/api/index.ts` — single swap point containing exactly:<br>`import type { ApiClient } from './types';`<br>`import { mockClient } from './mockClient';`<br>`export const api: ApiClient = mockClient;`<br>`export type { ApiClient } from './types';`<br>Integrate changes only this file (mock → live). No logic, only wiring. |
 | **Auto-seed auth state** | When plan says `API Login: Yes`, local auth MUST auto-login with local credentials on first load (no token in storage), showing authenticated main view, not login. Login/logout still work after manual logout. Get signed-in user through seam (`api.getCurrentUser()`, added in F1); auth provider follows same seam, so `import { currentUser } from '../mocks/data'` violates. When `API Login: No`, scaffold no auth state/login UI. |
-| **Build the Mock State Switcher (STANDARD — always)** | Create `services/web/src/api/previewState.ts` exposing forced `PreviewDataState` (`'data' \| 'loading' \| 'empty' \| 'error'`), initialized `?previewState=` → `localStorage['previewState']` → `'data'`. **Every mock method honors it**: `loading` → never/slow resolve; `error` → realistic `Error`; `empty` → `[]` / `null`; `data` → fixtures. Render fixed-corner Data/Loading/Empty/Error switcher gated by `import.meta.env.DEV` (PROD forced `'data'`, no UI). Fixed contract; see Mock State Switcher in [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md). |
+| **Build the Mock State Switcher (STANDARD — always)** | Create `services/web/src/api/previewState.ts` exposing forced `PreviewDataState` (`'data' \| 'loading' \| 'empty' \| 'error'`), initialized `?previewState=` → `localStorage['previewState']` → `'data'`. **Every mock method honors it**: `loading` → never/slow resolve; `error` → realistic `Error`; `empty` → `[]` / `null`; `data` → fixtures. Render fixed-corner Data/Loading/Empty/Error switcher gated by `import.meta.env.DEV` (PROD forced `'data'`, no UI). Fixed contract; see Mock State Switcher in [frontend-quality-bar.md](frontend-quality-bar.md). |
 | Handle all 4 data states | Loading (skeleton/spinner), Error (retry), Empty (CTA), Data (populated), all live-reachable via Mock State Switcher |
 
 ---
@@ -109,7 +109,7 @@ After scaffolding, `open_frontend_preview_view` opens **Approve UI**, **starts t
 
 - Plan Pages table specifies page **regions** (`header + hero + grid + footer` etc.).
 - HTML mock-up specifies **approved arrangement, density, palette**.
-- Reproduce visual feel with **real `Component Library:` primitives** from Section 6; see [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md) mappings.
+- Reproduce visual feel with **real `Component Library:` primitives** from Section 6; see [frontend-quality-bar.md](frontend-quality-bar.md) mappings.
 
 Do not import mock-up, embed via `<iframe>`, or copy its CSS classes into JSX. `.azure/.preview-temp/` is deleted in Step 11; only visual intent (regions, palette, density) carries into real components.
 
@@ -117,7 +117,7 @@ Do not import mock-up, embed via `<iframe>`, or copy its CSS classes into JSX. `
 
 ## Frontend Quality Bar
 
-Before backend wiring, frontend MUST meet these standards. Read full per-library [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md) before JSX. Baseline:
+Before backend wiring, frontend MUST meet these standards. Read full per-library [frontend-quality-bar.md](frontend-quality-bar.md) before JSX. Baseline:
 
 - No `any` types (use local type definitions in `services/web/src/types/`)
 - Hooks catch errors; handle loading/error states
@@ -125,6 +125,6 @@ Before backend wiring, frontend MUST meet these standards. Read full per-library
 - `.tsx` for files containing JSX, `.ts` for pure TypeScript
 - Handle all 4 data states: loading, error, empty, data (quality-bar State Coverage primitives—`<Skeleton>` / `<MessageBar intent="error">` / empty illustration + CTA / real data); expose all live via **Mock State Switcher** (dev-only `?previewState=` override; see standard)
 - **Auto-authenticated preview**: When `API Login` is `Yes`, local auth MUST auto-login on first load so user immediately sees main content, not login
-- **Render layout tokens with real library primitives**, never raw `<div className="card">` placeholders. See [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md) for per-library region-token mapping.
-- **Wrap the app shell in the library's theme provider** with a brand ramp derived from plan Section 6's `primary` color. See [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md) → Theming contract.
+- **Render layout tokens with real library primitives**, never raw `<div className="card">` placeholders. See [frontend-quality-bar.md](frontend-quality-bar.md) for per-library region-token mapping.
+- **Wrap the app shell in the library's theme provider** with a brand ramp derived from plan Section 6's `primary` color. See [frontend-quality-bar.md](frontend-quality-bar.md) → Theming contract.
 - **Use real library icons** (Fluent: `@fluentui/react-icons` Regular; Vuetify: `mdi-*`; Material: `<mat-icon>` real names; Skeleton/Pico: Lucide/Tabler). No emoji/SVG placeholders.

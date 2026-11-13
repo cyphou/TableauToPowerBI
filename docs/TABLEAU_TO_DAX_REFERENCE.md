@@ -231,10 +231,33 @@ When an aggregate wraps an expression (not a single column), the converter auto-
 
 | # | Tableau | DAX | Status | Notes |
 |---|---------|-----|--------|-------|
-| 1 | `{FIXED [dim] : AGG(expr)}` | Illustrative: `CALCULATE(AGG(expr), ALLEXCEPT('T', 'T'[dim]))` | ⚠️ | Source filter order, shelf aggregation and total grain require proof. Unverified cases can emit a diagnostic `TODO`/`BLANK()` rather than an equivalent value. Composite/range logical relationships require the explicit policy in [Known Limitations](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships). |
+| 1 | `{FIXED [dim] : AGG(expr)}` | Exact DAX with proof; otherwise bounded SUMX/AVERAGEX/MINX/MAXX or annotated `BLANK()` | ⚠️ | Apply the three-level FIXED policy below. Composite/range logical relationships require the explicit policy in [Known Limitations](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships). |
 | 2 | `{INCLUDE [dim] : AGG(expr)}` | `CALCULATE(AGG(expr))` | ✅ | |
 | 3 | `{EXCLUDE [dim] : AGG(expr)}` | `CALCULATE(AGG(expr), REMOVEFILTERS('T'[dim]))` | ✅ | |
 | 4 | `{AGG(expr)}` (no dims) | `CALCULATE(AGG(expr))` | ✅ | |
+
+FIXED uses three levels, in order:
+
+1. Proven source-scope equivalence emits exact DAX without an approximation
+	warning; the existing proof requirements are unchanged.
+2. Otherwise an explicit, consistent `sum:`, `avg:`, `min:` or `max:` shelf
+	selects SUMX/AVERAGEX/MINX/MAXX over **all** resolved physical FIXED keys in
+	one table, limited to a bounded direct-column inner aggregate. The emitted
+	warning names the inferred shelf and unverified source filters and totals.
+3. Missing, unsupported or conflicting evidence retains diagnostic
+	`TODO`/`BLANK()`. An extractor's inferred/default SUM is not shelf evidence.
+
+Bounded same-datasource one-hop FIXED references are supported. Do not infer
+support for arbitrary products, conditional inner aggregates or nested LOD.
+For `{FIXED [Region] : SUM([Sales])}` with a proven physical binding and an
+explicit SUM shelf, an illustrative approximation is:
+
+```dax
+SUMX(VALUES('Orders'[Region]), CALCULATE(SUM('Orders'[Sales])))
+```
+
+This editable formula still requires the generated approximation warning;
+generation and static validation are not native execution or value-parity proof.
 
 ---
 

@@ -10,7 +10,7 @@
 ## Shared design-quality principles (fidelity-agnostic — the contract BOTH phases share)
 
 > **Single design-quality contract for _both_ rendering targets:**
-> - **Planning preview** (`azure-project-plan`) — renders these principles as **raw, static HTML/CSS** in `.azure/.preview-temp/` (no framework, build step, JavaScript, or network). See raw-HTML/CSS recipes in [`html-preview.md`](.github/agents/azure-project-plan/references/html-preview.md).
+> - **Planning preview** (`azure-project-plan`) — renders these principles as **raw, static HTML/CSS** in `.azure/.preview-temp/` (no framework, build step, JavaScript, or network). See raw-HTML/CSS recipes in [`html-preview.md`](../azure-project-plan/references/html-preview.md).
 > - **Scaffold app** (`azure-project-scaffold`) — renders the *same* principles with real Section 6 **`Component Library` primitives**, using mappings below, plus production-only capabilities unavailable in static preview (real photos, motion, dark mode, webfont, library elevation).
 >
 > Both targets must show the **same professional product** at two fidelities. Planning preview is a presentation-quality visual specification, **not** a throwaway wireframe. Scaffold must reproduce it faithfully and **never regress below it**.

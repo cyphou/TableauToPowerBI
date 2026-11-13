@@ -9,11 +9,14 @@ FIXED cases without source-grain evidence are checked as static diagnostics.
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
+from xml.etree import ElementTree as ET
 
 from powerbi_import.errors import PartialGenerationError
 from powerbi_import.migration_quality import build_quality_report
@@ -27,7 +30,7 @@ from powerbi_import.tmdl_generator import (
     generate_tmdl,
 )
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
-
+from tableau_export.worksheet_extractor import extract_worksheet_fields
 
 _FALLBACK = "TODO: DAX conversion validation failed"
 _COLUMN_OWNERS = {
@@ -495,7 +498,153 @@ class TestReportedRowGrain(unittest.TestCase):
 
 
 class TestReportedFixedGrainStatic(unittest.TestCase):
-    """Defects 4--5: fail closed until the complete FIXED grain is proven."""
+    """Defects 4--5: exact, annotated approximation, or diagnostic fallback."""
+
+    @staticmethod
+    def _fixed_scope():
+        return {
+            "table": "Housing", "fixed_dimensions": ["Sector"],
+            "value_column": "Homes", "physical_fields": ["Sector", "Homes"],
+            "source_filters": [], "target_filters": [],
+            "filter_policy": "target_context_equals_fixed_input_per_key",
+            "view_grains": [["Sector"], []], "total_grain": [],
+            "total_aggregation": "SUM_DISTINCT_FIXED_KEYS",
+            "shelf_aggregation": "SUM", "value_type": "numeric",
+            "source_row_bag_verified": True, "physical_fields_verified": True,
+            "fixed_key_domain_verified": True, "filter_equivalence_verified": True,
+            "group_key_and_blank_equivalence_verified": True,
+            "numeric_and_null_equivalence_verified": True,
+            "all_target_uses_and_totals_verified": True, "engine_support_verified": True,
+        }
+
+    def test_fixed_four_shelves_accept_bare_and_matching_outer_aggregate(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        fixed = "{ FIXED [Sector] : MIN([Homes]) }"
+        for shelf, iterator in (("SUM", "SUMX"), ("AVG", "AVERAGEX"),
+                                ("MIN", "MINX"), ("MAX", "MAXX")):
+            for formula in (fixed, f"{shelf}({fixed})"):
+                with self.subTest(shelf=shelf, formula=formula):
+                    expression = convert_tableau_formula_to_dax(
+                        formula, table_name="Housing",
+                        table_columns=["Sector", "Homes"],
+                        column_table_map={"Sector": "Housing", "Homes": "Housing"},
+                        fixed_shelf_aggregation=shelf, validate_output=True,
+                        fallback_on_invalid=True)
+                    self.assertEqual(
+                        expression,
+                        f"/* shelf ({shelf.lower()}:) approximation; source filter "
+                        f"scope and totals unverified */ {iterator}("
+                        "VALUES('Housing'[Sector]), CALCULATE(MIN('Housing'[Homes])))")
+                    self.assertEqual(validate_dax_expression(expression), [])
+
+    def test_fixed_multiple_physical_keys_use_summarize(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector], [Category] : AVG([Homes]) }",
+            table_name="Housing", table_columns=["Sector", "Category", "Homes"],
+            fixed_shelf_aggregation="SUM")
+        self.assertIn("shelf (sum:) approximation", expression)
+        self.assertTrue(expression.endswith(
+            "SUMX(SUMMARIZE('Housing', 'Housing'[Sector], 'Housing'[Category]), "
+            "CALCULATE(AVERAGE('Housing'[Homes])))"), expression)
+        self.assertNotIn("ALLEXCEPT", expression)
+
+    def test_fixed_missing_unknown_or_mismatched_shelf_is_unsupported(self):
+        fixed = "{ FIXED [Sector] : MIN([Homes]) }"
+        for formula, shelf in ((fixed, None), (fixed, "ATTR"), (fixed, "MEDIAN"),
+                               (fixed, ""), (fixed, 1), (f"AVG({fixed})", "SUM")):
+            with self.subTest(formula=formula, shelf=shelf):
+                expression = convert_tableau_formula_to_dax(
+                    formula, table_name="Housing", table_columns=["Sector", "Homes"],
+                    fixed_shelf_aggregation=shelf)
+                _assert_unsupported(self, expression, "FIXED")
+                self.assertNotIn("ALLEXCEPT", expression)
+                self.assertNotIn("approximation;", expression)
+
+    def test_fixed_shelf_requires_physical_single_table_keys_and_direct_inner(self):
+        fixed = "{ FIXED [Sector] : MIN([Homes]) }"
+        cases = (
+            (fixed, {"table_columns": None}),
+            (fixed, {"table_columns": ["Homes"]}),
+            (fixed, {"column_table_map": {"Sector": "OtherHousing"}}),
+            (fixed, {"column_table_map": {"Homes": "OtherHousing"}}),
+            (fixed, {"measure_names": {"Sector"}}),
+            (fixed, {"measure_names": {"Homes"}}),
+            (fixed, {"is_calc_column": True}),
+            ("{ FIXED [OtherHousing].[Sector] : MIN([Homes]) }", {}),
+            ("{ FIXED [Sector], [Sector] : MIN([Homes]) }", {}),
+            ("{ FIXED [Sector] : MIN([Homes] + 1) }", {}),
+            ("{ FIXED [Sector] : MIN([Homes]) / SUM([Homes]) }", {}),
+            ("{ FIXED [Sector] : [Homes] }", {}),
+        )
+        for formula, overrides in cases:
+            with self.subTest(formula=formula, overrides=overrides):
+                options = {"table_name": "Housing",
+                           "table_columns": ["Sector", "Homes"],
+                           "fixed_shelf_aggregation": "SUM"}
+                options.update(overrides)
+                expression = convert_tableau_formula_to_dax(formula, **options)
+                _assert_unsupported(self, expression, "FIXED", "physical")
+                self.assertNotIn("ALLEXCEPT", expression)
+
+    def test_fixed_unresolved_original_foreign_qualification_is_not_local(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ FIXED [federated.foreign].[Sector] : MIN([Homes]) }",
+            table_name="Housing", table_columns=["Sector", "Homes"],
+            column_table_map={"Sector": "Housing", "Homes": "Housing"},
+            fixed_shelf_aggregation="SUM")
+        _assert_unsupported(self, expression, "FIXED", "physical")
+        self.assertNotIn("approximation;", expression)
+        self.assertNotIn("SUMX(", expression)
+
+    def test_fixed_explicit_same_table_qualification_still_approximates(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ FIXED [Housing].[Sector] : MIN([Housing].[Homes]) }",
+            table_name="Housing", table_columns=["Sector", "Homes"],
+            column_table_map={"Sector": "Housing", "Homes": "Housing"},
+            fixed_shelf_aggregation="SUM")
+        self.assertEqual(expression,
+            "/* shelf (sum:) approximation; source filter scope and totals "
+            "unverified */ SUMX(VALUES('Housing'[Sector]), "
+            "CALCULATE(MIN('Housing'[Homes])))")
+
+    def test_fixed_exact_proof_takes_precedence_over_shelf_approximation(self):
+        fixed = "{ FIXED [Sector] : MIN([Homes]) }"
+        for outer in (False, True):
+            with self.subTest(outer=outer):
+                scope = self._fixed_scope()
+                if outer:
+                    scope["shelf_aggregation"] = "AGG"
+                options = {"table_name": "Housing",
+                           "table_columns": ["Sector", "Homes"],
+                           "verified_fixed_scope": scope, "validate_output": True}
+                formula = f"SUM({fixed})" if outer else fixed
+                exact = convert_tableau_formula_to_dax(formula, **options)
+                with_shelf = convert_tableau_formula_to_dax(
+                    formula, fixed_shelf_aggregation="SUM", **options)
+                self.assertEqual(exact, with_shelf)
+                self.assertEqual(exact,
+                    "SUMX(SUMMARIZE('Housing', 'Housing'[Sector]), "
+                    "CALCULATE(MIN('Housing'[Homes])))")
+                self.assertNotIn("unverified", with_shelf)
+
+    def test_fixed_incomplete_exact_evidence_never_silently_claims_exactness(self):
+        proof = self._fixed_scope()
+        for missing in proof:
+            for shelf in (None, "SUM"):
+                with self.subTest(missing=missing, shelf=shelf):
+                    scope = deepcopy(proof)
+                    del scope[missing]
+                    expression = convert_tableau_formula_to_dax(
+                        "{ FIXED [Sector] : MIN([Homes]) }", table_name="Housing",
+                        table_columns=["Sector", "Homes"], verified_fixed_scope=scope,
+                        fixed_shelf_aggregation=shelf)
+                    if shelf is None:
+                        _assert_unsupported(self, expression, "FIXED", "grain")
+                    else:
+                        self.assertIn("shelf (sum:) approximation; source filter "
+                                      "scope and totals unverified", expression)
+                        self.assertIn("SUMX(VALUES('Housing'[Sector])", expression)
 
     def test_report_reference_total_is_not_a_dax_execution(self):
         # This is just the report's synthetic reference arithmetic.  It does
@@ -1057,6 +1206,1099 @@ class TestMultiReferenceDependencyIdentity(unittest.TestCase):
 class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
     """Static pipeline and quality checks; no semantic engine is invoked."""
 
+    @staticmethod
+    def _write_worksheet_only_cli_workbook(input_dir, dependency_datasource="Synthetic"):
+        source = input_dir / "Coordinates.csv"
+        source.write_text("x,y\n1,2\n3,4\n", encoding="utf-8")
+        workbook = ET.Element("workbook", version="18.1")
+        datasource = ET.SubElement(
+            ET.SubElement(workbook, "datasources"), "datasource",
+            name="Synthetic", caption="Synthetic", inline="true")
+        connection = ET.SubElement(datasource, "connection", {
+            "class": "textscan", "directory": str(input_dir),
+            "filename": source.name, "separator": ",", "header": "yes",
+        })
+        relation = ET.SubElement(
+            connection, "relation", type="table", name="Coordinates",
+            table="[Coordinates.csv]")
+        columns = ET.SubElement(relation, "columns", header="yes", separator=",")
+        records = ET.SubElement(connection, "metadata-records")
+        for ordinal, name in enumerate(("x", "y")):
+            ET.SubElement(columns, "column", name=name, datatype="real",
+                          ordinal=str(ordinal))
+            ET.SubElement(datasource, "column", name=f"[{name}]",
+                          datatype="real", role="measure")
+            record = ET.SubElement(records, "metadata-record", {"class": "column"})
+            for tag, value in (("local-name", f"[{name}]"), ("remote-name", name),
+                               ("parent-name", "[Coordinates]"), ("local-type", "real")):
+                ET.SubElement(record, tag).text = value
+        worksheet = ET.SubElement(
+            ET.SubElement(workbook, "worksheets"), "worksheet", name="Coordinate Total")
+        table = ET.SubElement(worksheet, "table")
+        view = ET.SubElement(table, "view")
+        ET.SubElement(ET.SubElement(view, "datasources"), "datasource",
+                      name=dependency_datasource, caption=dependency_datasource)
+        dependencies = ET.SubElement(
+            view, "datasource-dependencies", datasource=dependency_datasource)
+        calculation = ET.SubElement(
+            dependencies, "column", name="[WorksheetTotal]", caption="Coordinate Total",
+            role="measure", datatype="real", type="quantitative")
+        ET.SubElement(calculation, "calculation", {
+            "class": "tableau", "formula": "SUM([x]) + SUM([y])",
+        })
+        ET.SubElement(dependencies, "column-instance", {
+            "column": "[WorksheetTotal]", "derivation": "User",
+            "name": "[usr:WorksheetTotal:qk]", "type": "quantitative",
+        })
+        ET.SubElement(table, "cols")
+        ET.SubElement(table, "rows").text = (
+            f"[{dependency_datasource}].[usr:WorksheetTotal:qk]")
+        ET.SubElement(ET.SubElement(ET.SubElement(table, "panes"), "pane"),
+                      "mark", {"class": "Text"})
+        path = input_dir / "SyntheticWorksheet.twb"
+        ET.ElementTree(workbook).write(path, encoding="utf-8", xml_declaration=True)
+        return path
+
+    def _extract_scoped_worksheet_calculations(self, root, global_datasources=()):
+        from tableau_export.extract_tableau_data import TableauExtractor
+
+        path = self._write_worksheet_only_cli_workbook(root)
+        workbook = ET.parse(path).getroot()
+        datasource = deepcopy(workbook.find("./datasources/datasource"))
+        datasource.set("name", "OtherSynthetic")
+        datasource.set("caption", "OtherSynthetic")
+        source = root / "OtherCoordinates.csv"
+        source.write_text("u,v\n5,6\n7,8\n", encoding="utf-8")
+        connection = datasource.find("connection")
+        connection.set("filename", source.name)
+        relation = connection.find("relation")
+        relation.set("name", "OtherCoordinates")
+        relation.set("table", "[OtherCoordinates.csv]")
+        for column, name in zip(relation.findall("./columns/column"), ("u", "v")):
+            column.set("name", name)
+        for column, name in zip(datasource.findall("column"), ("u", "v")):
+            column.set("name", f"[{name}]")
+        for record, name in zip(connection.findall("./metadata-records/metadata-record"),
+                                ("u", "v")):
+            record.find("local-name").text = f"[{name}]"
+            record.find("remote-name").text = name
+            record.find("parent-name").text = "[OtherCoordinates]"
+        workbook.find("datasources").append(datasource)
+        worksheet = deepcopy(workbook.find("./worksheets/worksheet"))
+        worksheet.set("name", "Other Total")
+        reference = worksheet.find("./table/view/datasources/datasource")
+        reference.set("name", "OtherSynthetic")
+        reference.set("caption", "OtherSynthetic")
+        dependencies = worksheet.find("./table/view/datasource-dependencies")
+        dependencies.set("datasource", "OtherSynthetic")
+        dependencies.find("column").set("caption", "Other Total")
+        dependencies.find("./column/calculation").set("formula", "SUM([u]) * SUM([v])")
+        worksheet.find("./table/rows").text = "[OtherSynthetic].[usr:WorksheetTotal:qk]"
+        workbook.find("worksheets").append(worksheet)
+        for declared in workbook.findall("./datasources/datasource"):
+            if declared.get("name") in global_datasources:
+                owner = declared.get("name")
+                dependency = next(
+                    item for item in workbook.findall(
+                        "./worksheets/worksheet/table/view/datasource-dependencies")
+                    if item.get("datasource") == owner)
+                calculation = deepcopy(dependency.find("column"))
+                if owner == "Synthetic":
+                    calculation.find("calculation").set("formula", "SUM([x]) - SUM([y])")
+                declared.append(calculation)
+        ET.ElementTree(workbook).write(path, encoding="utf-8", xml_declaration=True)
+        extractor = TableauExtractor(str(path), output_dir=str(root / "extract"))
+        extractor.extract_datasources(workbook)
+        extractor.extract_calculations(workbook)
+        return extractor.workbook_data
+
+    def _assert_scoped_worksheet_calculations(self, data, first_formula):
+        expected = {
+            "Synthetic": first_formula,
+            "OtherSynthetic": "SUM([u]) * SUM([v])",
+        }
+        calculations = data["calculations"]
+        self.assertEqual(len(calculations), 2)
+        self.assertEqual({item["name"] for item in calculations}, {"[WorksheetTotal]"})
+        self.assertEqual(
+            {item["datasource_name"]: item["formula"] for item in calculations}, expected)
+        self.assertEqual({item["name"] for item in data["datasources"]}, set(expected))
+        for datasource in data["datasources"]:
+            self.assertEqual(len(datasource["calculations"]), 1)
+            calculation = datasource["calculations"][0]
+            self.assertEqual(calculation["name"], "[WorksheetTotal]")
+            self.assertEqual(calculation["datasource_name"], datasource["name"])
+            self.assertEqual(calculation["formula"], expected[datasource["name"]])
+            self.assertIn(calculation, calculations)
+
+    def test_worksheet_only_same_raw_id_survives_in_two_datasources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = self._extract_scoped_worksheet_calculations(Path(temporary))
+            self._assert_scoped_worksheet_calculations(data, "SUM([x]) + SUM([y])")
+            for calculation in data["calculations"]:
+                self.assertNotIn("_source_declaration_conflicts", calculation)
+
+    def test_global_and_other_datasource_worksheet_same_raw_id_both_survive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = self._extract_scoped_worksheet_calculations(
+                Path(temporary), global_datasources=("Synthetic",))
+            self._assert_scoped_worksheet_calculations(data, "SUM([x]) - SUM([y])")
+
+    def test_global_same_raw_id_survives_in_two_datasources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = self._extract_scoped_worksheet_calculations(
+                Path(temporary), global_datasources=("Synthetic", "OtherSynthetic"))
+            self._assert_scoped_worksheet_calculations(data, "SUM([x]) - SUM([y])")
+
+    def test_worksheet_only_same_datasource_repeated_across_sheets_is_deduplicated(self):
+        from tableau_export.extract_tableau_data import TableauExtractor
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self._write_worksheet_only_cli_workbook(root)
+            workbook = ET.parse(path).getroot()
+            repeated = deepcopy(workbook.find("./worksheets/worksheet"))
+            repeated.set("name", "Repeated Coordinate Total")
+            workbook.find("worksheets").append(repeated)
+            extractor = TableauExtractor(str(path), output_dir=str(root / "extract"))
+            extractor.extract_datasources(workbook)
+            extractor.extract_calculations(workbook)
+            calculations = extractor.workbook_data["calculations"]
+            self.assertEqual(len(calculations), 1)
+            self.assertEqual(calculations[0]["name"], "[WorksheetTotal]")
+            self.assertEqual(calculations[0]["datasource_name"], "Synthetic")
+            self.assertEqual(calculations[0]["formula"], "SUM([x]) + SUM([y])")
+            self.assertEqual(extractor.workbook_data["datasources"][0]["calculations"],
+                             calculations)
+            self.assertNotIn("_source_declaration_conflicts", calculations[0])
+
+    def _write_source_declaration_workbook(self, root, alternates, dependents=False):
+        path = self._write_worksheet_only_cli_workbook(root)
+        workbook = ET.parse(path).getroot()
+        original = workbook.find("./worksheets/worksheet")
+        for index, changes in enumerate(alternates):
+            worksheet = deepcopy(original)
+            worksheet.set("name", f"Alternate Total {index}")
+            column = worksheet.find("./table/view/datasource-dependencies/column")
+            for key, value in changes.items():
+                target = column.find("calculation") if key in ("formula", "class") else column
+                target.set(key, value)
+            workbook.find("worksheets").append(worksheet)
+        if dependents:
+            dependencies = original.find("./table/view/datasource-dependencies")
+            for name, formula in (("Consumer", "[WorksheetTotal] + 1"),
+                                  ("Unrelated", "SUM([x])")):
+                column = ET.SubElement(
+                    dependencies, "column", name=f"[{name}]", caption=name,
+                    role="measure", datatype="real", type="quantitative")
+                ET.SubElement(column, "calculation", {"class": "tableau", "formula": formula})
+        ET.ElementTree(workbook).write(path, encoding="utf-8", xml_declaration=True)
+        return path
+
+    @staticmethod
+    def _extract_source_declaration_workbook(path):
+        from tableau_export.extract_tableau_data import TableauExtractor
+
+        workbook = ET.parse(path).getroot()
+        extractor = TableauExtractor(str(path), output_dir=str(path.parent / "extract"))
+        extractor.extract_datasources(workbook)
+        extractor.extract_calculations(workbook)
+        return extractor.workbook_data
+
+    def test_source_declaration_conflicts_preserve_distinct_full_alternates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write_source_declaration_workbook(Path(temporary), [
+                {"formula": "MIN([x]) + MIN([y])"},
+                {"formula": "MAX([x]) + MAX([y])"},
+                {"formula": "MIN([x]) + MIN([y])"},
+                {},
+            ])
+            data = self._extract_source_declaration_workbook(path)
+            self.assertEqual(len(data["calculations"]), 1)
+            canonical = data["calculations"][0]
+            self.assertIs(data["datasources"][0]["calculations"][0], canonical)
+            self.assertEqual(canonical["formula"], "SUM([x]) + SUM([y])")
+            expected = [{
+                "name": "[WorksheetTotal]", "datasource_name": "Synthetic",
+                "caption": "Coordinate Total", "formula": formula, "class": "tableau",
+                "datatype": "real", "role": "measure", "type": "quantitative",
+            } for formula in ("MIN([x]) + MIN([y])", "MAX([x]) + MAX([y])")]
+            self.assertEqual(canonical["_source_declaration_conflicts"], expected)
+            serialized = json.loads(json.dumps(data))
+            for calculation in (serialized["calculations"][0],
+                                serialized["datasources"][0]["calculations"][0]):
+                self.assertEqual(calculation["formula"], "SUM([x]) + SUM([y])")
+                self.assertEqual(calculation["_source_declaration_conflicts"], expected)
+
+    def test_source_declaration_conflicts_detect_each_semantic_field(self):
+        for key, value in (("formula", "MIN([x]) + MIN([y])"), ("class", "synthetic"),
+                           ("datatype", "integer"), ("role", "dimension"),
+                           ("type", "ordinal"), ("caption", "Alternate Caption")):
+            with self.subTest(field=key), tempfile.TemporaryDirectory() as temporary:
+                path = self._write_source_declaration_workbook(
+                    Path(temporary), [{key: value}, {key: value}])
+                data = self._extract_source_declaration_workbook(path)
+                self.assertEqual(len(data["calculations"]), 1)
+                canonical = data["calculations"][0]
+                expected = {name: content for name, content in canonical.items()
+                            if name != "_source_declaration_conflicts"}
+                expected[key] = value
+                self.assertEqual(canonical["_source_declaration_conflicts"], [expected])
+                self.assertIs(data["datasources"][0]["calculations"][0], canonical)
+
+    def test_source_declaration_conflicts_global_precedence_is_evidence_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = self._extract_scoped_worksheet_calculations(
+                root, global_datasources=("Synthetic",))
+            canonical = next(calculation for calculation in data["calculations"]
+                             if calculation["datasource_name"] == "Synthetic")
+            self.assertEqual(canonical["formula"], "SUM([x]) - SUM([y])")
+            self.assertEqual(canonical["_source_declaration_conflicts"], [{
+                "name": "[WorksheetTotal]", "datasource_name": "Synthetic",
+                "caption": "Coordinate Total", "formula": "SUM([x]) + SUM([y])",
+                "class": "tableau", "datatype": "real", "role": "measure",
+                "type": "quantitative",
+            }])
+            self.assertIs(data["datasources"][0]["calculations"][0], canonical)
+            contents = self._generate_fixed_tmdl(data["datasources"], [])
+            _assert_unsupported(self, self._fixed_declaration(
+                contents["Coordinates"], "WorksheetTotal", "Coordinate Total"),
+                "conflicting source calculation declarations")
+            self.assertEqual(self._fixed_declaration(
+                contents["OtherCoordinates"], "WorksheetTotal", "Other Total"),
+                "SUM('OtherCoordinates'[u]) * SUM('OtherCoordinates'[v])")
+
+    def _assert_source_declaration_tmdl(self, content):
+        affected = self._fixed_declaration(content, "WorksheetTotal", "Coordinate Total")
+        _assert_unsupported(self, affected, "conflicting source calculation declarations")
+        consumer = self._fixed_declaration(content, "Consumer", "Consumer")
+        _assert_unsupported(self, consumer, "depend")
+        self.assertEqual(self._fixed_declaration(content, "Unrelated", "Unrelated"),
+                         "SUM('Coordinates'[x])")
+        for caption in ("Coordinate Total", "Consumer"):
+            declaration = re.search(
+                rf"(?ms)^\tmeasure '?{re.escape(caption)}'? =.*?(?=^\t(?:measure|column) |\Z)",
+                content)
+            self.assertIsNotNone(declaration, content)
+            self.assertIn("annotation MigrationNote =", declaration.group())
+        self.assertIn("DAX conversion failed: conflicting source calculation declarations",
+                      content)
+
+    def test_source_declaration_conflicts_emit_diagnostics_without_model_abort(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write_source_declaration_workbook(
+                Path(temporary), [{"formula": "MIN([x]) + MIN([y])"}], dependents=True)
+            data = self._extract_source_declaration_workbook(path)
+            content = self._generate_fixed_tmdl(data["datasources"], [])["Coordinates"]
+            self._assert_source_declaration_tmdl(content)
+
+    def test_source_declaration_conflicts_dimension_emits_diagnostic_column(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write_source_declaration_workbook(Path(temporary), [])
+            workbook = ET.parse(path).getroot()
+            column = workbook.find(
+                "./worksheets/worksheet/table/view/datasource-dependencies/column")
+            column.set("role", "dimension")
+            column.find("calculation").set("formula", "[x] + [y]")
+            alternate = deepcopy(workbook.find("./worksheets/worksheet"))
+            alternate.set("name", "Alternate Dimension")
+            alternate.find("./table/view/datasource-dependencies/column/calculation").set(
+                "formula", "[x] - [y]")
+            workbook.find("worksheets").append(alternate)
+            ET.ElementTree(workbook).write(path, encoding="utf-8", xml_declaration=True)
+            data = self._extract_source_declaration_workbook(path)
+            content = self._generate_fixed_tmdl(data["datasources"], [])["Coordinates"]
+            declaration = re.search(
+                r"(?m)^\tcolumn 'Coordinate Total' =([^\n]*)", content)
+            self.assertIsNotNone(declaration, content)
+            expression = re.sub(r"^/\* Tableau calculation;[^\n]*?\*/\s*", "",
+                                declaration.group(1).strip(), count=1)
+            _assert_unsupported(self, expression,
+                                "conflicting source calculation declarations")
+            self.assertRegex(content, r'annotation MigrationNote = "?DAX conversion failed: '
+                             r'conflicting source calculation declarations')
+
+    def test_source_declaration_conflicts_duplicate_global_dimensions_canonicalize(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write_worksheet_only_cli_workbook(Path(temporary))
+            workbook = ET.parse(path).getroot()
+            workbook.remove(workbook.find("worksheets"))
+            datasource = workbook.find("./datasources/datasource")
+            for formula in ("[x] + 1", "[x] + 2"):
+                column = ET.SubElement(
+                    datasource, "column", name="[GlobalDimension]",
+                    caption="Global Dimension", role="dimension", datatype="real",
+                    type="quantitative")
+                ET.SubElement(column, "calculation", {"class": "tableau", "formula": formula})
+            ET.ElementTree(workbook).write(path, encoding="utf-8", xml_declaration=True)
+            data = self._extract_source_declaration_workbook(path)
+            self.assertEqual(len(data["calculations"]), 1)
+            self.assertEqual(len(data["datasources"][0]["calculations"]), 1)
+            canonical = data["calculations"][0]
+            self.assertIs(data["datasources"][0]["calculations"][0], canonical)
+            self.assertEqual(canonical["formula"], "[x] + 1")
+            self.assertEqual(canonical["_source_declaration_conflicts"], [{
+                "name": "[GlobalDimension]", "datasource_name": "Synthetic",
+                "caption": "Global Dimension", "formula": "[x] + 2",
+                "class": "tableau", "datatype": "real", "role": "dimension",
+                "type": "quantitative", "description": "",
+            }])
+            serialized = json.loads(json.dumps(data))
+            self.assertEqual(serialized["datasources"][0]["calculations"],
+                             serialized["calculations"])
+            content = self._generate_fixed_tmdl(serialized["datasources"], [])["Coordinates"]
+            self._assert_conflicted_tmdl_declaration(
+                content, "Global Dimension", "conflicting source calculation declarations")
+            self.assertNotRegex(content, r'Table\.AddColumn\([^\n]*"Global Dimension"')
+            self.assertNotRegex(content, r'each\s+(?:\([^\n]*\))?\s*\[x\]\s*\+\s*2')
+
+    def _literal_conflict_datasource(self, *, string=False):
+        datasource = self._fixed_datasource(table="Coordinates")
+        datasource["tables"][0]["columns"] = [{"name": "x", "datatype": "real"}]
+        constant = {
+            "name": "[K]", "caption": "K", "datasource_name": "Synthetic",
+            "role": "measure", "datatype": "string" if string else "real",
+            "formula": '"FIRST"' if string else "1", "class": "tableau",
+            "type": "nominal" if string else "quantitative",
+        }
+        constant["_source_declaration_conflicts"] = [dict(
+            constant, formula='"SECOND"' if string else "2")]
+        consumers = (("Bare", "[K]", "measure"),) if string else (
+            ("Arithmetic", "[x] + [K]", "dimension"),
+            ("Aggregate", "SUM([K])", "measure"),
+            ("Transitive", "[Arithmetic] + 10", "dimension"),
+        )
+        datasource["calculations"] = [constant] + [{
+            "name": f"[{name}]", "caption": name, "datasource_name": "Synthetic",
+            "role": role, "datatype": "string" if string else "real", "formula": formula,
+        } for name, formula, role in consumers]
+        return datasource
+
+    def _assert_conflicted_tmdl_declaration(self, content, caption, *reason_words):
+        declaration = re.search(
+            rf"(?m)^\t(?:column|measure) (?:'{re.escape(caption)}'|{re.escape(caption)})"
+            r" =([^\n]*)", content)
+        self.assertIsNotNone(declaration, content)
+        expression = re.sub(r"^/\* Tableau calculation;[^\n]*?\*/\s*", "",
+                            declaration.group(1).strip(), count=1)
+        _assert_unsupported(self, expression, *reason_words)
+        self.assertNotRegex(content, rf'Table\.AddColumn\([^\n]*"{re.escape(caption)}"')
+
+    def test_source_declaration_conflicts_numeric_literal_consumers_stay_diagnostic(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasource = self._literal_conflict_datasource()
+                if reverse:
+                    datasource["calculations"].reverse()
+                content = self._generate_fixed_tmdl([datasource], [])["Coordinates"]
+                self._assert_conflicted_tmdl_declaration(
+                    content, "K", "conflicting source calculation declarations")
+                for caption in ("Arithmetic", "Aggregate"):
+                    self._assert_conflicted_tmdl_declaration(content, caption, "depend")
+                self.assertNotRegex(content, r'each\s+\[x\]\s*\+\s*1')
+                self.assertNotIn("COUNTROWS(", content)
+
+    def test_source_declaration_conflicts_string_literal_bare_consumer_stays_diagnostic(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasource = self._literal_conflict_datasource(string=True)
+                if reverse:
+                    datasource["calculations"].reverse()
+                content = self._generate_fixed_tmdl([datasource], [])["Coordinates"]
+                self._assert_conflicted_tmdl_declaration(
+                    content, "K", "conflicting source calculation declarations")
+                self._assert_conflicted_tmdl_declaration(content, "Bare", "depend")
+                self.assertNotRegex(content, r'(?m)=\s*"FIRST"\s*$')
+
+    def test_source_declaration_conflicts_literal_dependency_is_transitive(self):
+        datasource = self._literal_conflict_datasource()
+        datasource["calculations"].reverse()
+        content = self._generate_fixed_tmdl([datasource], [])["Coordinates"]
+        self._assert_conflicted_tmdl_declaration(content, "Transitive", "depend")
+        self.assertNotRegex(content, r'Table\.AddColumn\([^\n]*"(?:Arithmetic|Transitive)"')
+
+    def test_source_declaration_conflicts_unrelated_literal_and_table_fold_survive(self):
+        datasource = self._literal_conflict_datasource()
+        datasource["calculations"].extend([{
+            "name": f"[{name}]", "caption": name, "datasource_name": "Synthetic",
+            "role": role, "datatype": "real", "formula": formula,
+        } for name, formula, role in (
+            ("ValidK", "3", "measure"),
+            ("ValidArithmetic", "[x] + [ValidK]", "dimension"),
+            ("ValidAggregate", "SUM([ValidK])", "measure"),
+        )])
+        content = self._generate_fixed_tmdl([datasource], [])["Coordinates"]
+        self._assert_conflicted_tmdl_declaration(content, "Aggregate", "depend")
+        self.assertRegex(content, r'Table\.AddColumn\([^\n]*"ValidArithmetic"[^\n]*\[x\]\s*\+\s*3')
+        self.assertRegex(content, r'Table\.AddColumn\([^\n]*"ValidK",\s*each\s+3\b')
+        self.assertEqual(self._fixed_declaration(content, "ValidAggregate", "ValidAggregate"),
+                 "SUM('Coordinates'[ValidK])")
+
+    def test_source_declaration_conflicts_foreign_literal_homonym_is_unaffected(self):
+        datasource = self._literal_conflict_datasource()
+        foreign = self._fixed_datasource(name="OtherSynthetic", table="OtherCoordinates")
+        foreign["tables"][0]["columns"] = [{"name": "u", "datatype": "real"}]
+        foreign["calculations"] = [{
+            "name": "[K]", "caption": "Foreign K", "datasource_name": "OtherSynthetic",
+            "role": "measure", "datatype": "string", "formula": '"FOREIGN"',
+        }]
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = [deepcopy(datasource), deepcopy(foreign)]
+                contents = self._generate_fixed_tmdl(
+                    list(reversed(datasources)) if reverse else datasources, [])
+                self._assert_conflicted_tmdl_declaration(
+                    contents["Coordinates"], "K", "conflicting source calculation declarations")
+                self.assertEqual(self._fixed_declaration(
+                    contents["OtherCoordinates"], "K", "Foreign K"), '"FOREIGN"')
+                self.assertNotIn(_FALLBACK, contents["OtherCoordinates"])
+
+    def test_source_declaration_conflicts_override_verified_fixed_and_approximation(self):
+        scope = TestReportedFixedGrainStatic._fixed_scope()
+        for mode, extra in (("exact", {"verified_fixed_scopes": {
+                "Synthetic": {"FixedHomes": scope}}}), ("approximation", {
+                    "verified_fixed_scopes": {}, "worksheets": [{
+                        "name": "Total", "dimensions": [], "fields": [{
+                            "name": "[FixedHomes]", "datasource": "Synthetic",
+                            "aggregation": "SUM", "aggregation_evidence": "explicit",
+                            "aggregation_candidates": ["sum"]}]}]})):
+            with self.subTest(mode=mode):
+                datasource = self._fixed_datasource()
+                control = self._generate_fixed_tmdl(
+                    [deepcopy(datasource)], **{"worksheets": [], **extra})["Housing"]
+                expression = self._fixed_declaration(control)
+                self.assertNotIn("TODO:", expression)
+                self.assertIn("SUMX(", expression)
+                self.assertEqual("approximation" in expression, mode == "approximation")
+                canonical = datasource["calculations"][0]
+                canonical["_source_declaration_conflicts"] = [dict(
+                    canonical, formula="{ FIXED [Sector] : MAX([Homes]) }")]
+                content = self._generate_fixed_tmdl(
+                    [datasource], **{"worksheets": [], **extra})["Housing"]
+                _assert_unsupported(self, self._fixed_declaration(content),
+                                    "conflicting source calculation declarations")
+                self.assertNotIn("approximation", self._fixed_declaration(content))
+                self.assertRegex(content, r'annotation MigrationNote = "?DAX conversion failed: '
+                                 r'conflicting source calculation declarations')
+
+    def test_worksheet_only_same_raw_id_tmdl_keeps_each_physical_table(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = self._extract_scoped_worksheet_calculations(root)
+            self._assert_scoped_worksheet_calculations(data, "SUM([x]) + SUM([y])")
+            model_dir = root / "Synthetic.SemanticModel"
+            generate_tmdl(data["datasources"], "Synthetic", {}, str(model_dir),
+                          parameterize=False)
+            for table, caption, expected in (
+                    ("Coordinates", "Coordinate Total",
+                     "SUM('Coordinates'[x]) + SUM('Coordinates'[y])"),
+                    ("OtherCoordinates", "Other Total",
+                     "SUM('OtherCoordinates'[u]) * SUM('OtherCoordinates'[v])")):
+                with self.subTest(table=table):
+                    content = (model_dir / "definition" / "tables" /
+                               f"{table}.tmdl").read_text(encoding="utf-8")
+                    expression = self._fixed_declaration(
+                        content, raw_name="WorksheetTotal", caption=caption)
+                    self.assertEqual(expression, expected)
+
+    def _run_batch_cli(self, root, input_dir, output_dir, expected_returncode=0):
+        repository = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, str(repository / "migrate.py"), "--batch", str(input_dir),
+             "--output-dir", str(output_dir)],
+            cwd=root, env={**os.environ, "PYTHONIOENCODING": "utf-8",
+                           "TTPBI_VERIFIED_FIXED_SCOPES": "{}"},
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120)
+        self.assertEqual(result.returncode, expected_returncode, result.stdout + result.stderr)
+
+    def test_worksheet_only_calculation_keeps_dependency_datasource_identity(self):
+        from tableau_export.extract_tableau_data import TableauExtractor
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self._write_worksheet_only_cli_workbook(root)
+            workbook = ET.parse(path).getroot()
+            self.assertEqual(workbook.findall("./datasources/datasource/column/calculation"), [])
+            extractor = TableauExtractor(str(path), output_dir=str(root / "extract"))
+            extractor.extract_datasources(workbook)
+            extractor.extract_calculations(workbook)
+            global_calculations = extractor.workbook_data["calculations"]
+            self.assertEqual(len(global_calculations), 1)
+            self.assertEqual(global_calculations[0]["name"], "[WorksheetTotal]")
+            self.assertEqual(global_calculations[0]["datasource_name"], "Synthetic")
+            self.assertEqual(global_calculations[0]["formula"], "SUM([x]) + SUM([y])")
+            datasources = extractor.workbook_data["datasources"]
+            self.assertEqual([item["name"] for item in datasources], ["Synthetic"])
+            self.assertEqual(datasources[0]["calculations"], global_calculations)
+            self.assertEqual(datasources[0]["calculations"][0]["datasource_name"], "Synthetic")
+
+    def test_worksheet_only_unknown_dependency_datasource_is_not_rebound(self):
+        from tableau_export.extract_tableau_data import TableauExtractor
+
+        for dependency_datasource in ("UnknownSynthetic", "", None):
+            with self.subTest(datasource=dependency_datasource), \
+                    tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path = self._write_worksheet_only_cli_workbook(
+                    root, dependency_datasource or "")
+                workbook = ET.parse(path).getroot()
+                if dependency_datasource is None:
+                    workbook.find("./worksheets/worksheet/table/view/"
+                                  "datasource-dependencies").attrib.pop("datasource")
+                extractor = TableauExtractor(str(path), output_dir=str(root / "extract"))
+                extractor.extract_datasources(workbook)
+                extractor.extract_calculations(workbook)
+                calculations = extractor.workbook_data["calculations"]
+                self.assertEqual(len(calculations), 1)
+                self.assertEqual(calculations[0]["name"], "[WorksheetTotal]")
+                self.assertEqual(calculations[0]["datasource_name"],
+                                 dependency_datasource or "")
+                self.assertEqual(calculations[0]["formula"], "SUM([x]) + SUM([y])")
+                datasources = extractor.workbook_data["datasources"]
+                self.assertEqual([item["name"] for item in datasources], ["Synthetic"])
+                for datasource in datasources:
+                    self.assertEqual(datasource.get("calculations", []), [])
+
+    def test_worksheet_only_sum_survives_ordinary_batch_cli(self):
+        from powerbi_import.openability import check_openability
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            output_dir = root / "output"
+            self._write_worksheet_only_cli_workbook(input_dir)
+            self._run_batch_cli(root, input_dir, output_dir)
+            project = output_dir / "SyntheticWorksheet"
+            self.assertTrue((project / "SyntheticWorksheet.pbip").is_file())
+            persisted_gate = json.loads(
+                (project / "openability_report.json").read_text(encoding="utf-8"))
+            for gate in (persisted_gate, check_openability(str(project)).to_dict()):
+                self.assertTrue(gate["openable"], gate)
+                self.assertEqual(gate["blocking_issues"], [])
+            snapshot = output_dir / ".migration_extract" / "SyntheticWorksheet.twb"
+            calculations = json.loads(
+                (snapshot / "calculations.json").read_text(encoding="utf-8"))
+            datasources = json.loads(
+                (snapshot / "datasources.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(calculations), 1)
+            self.assertEqual(calculations[0]["datasource_name"], "Synthetic")
+            self.assertEqual(datasources[0]["calculations"], calculations)
+            content = (project / "SyntheticWorksheet.SemanticModel" / "definition" /
+                       "tables" / "Coordinates.tmdl").read_text(encoding="utf-8")
+            expression = self._fixed_declaration(
+                content, raw_name="WorksheetTotal", caption="Coordinate Total")
+            self.assertEqual(expression, "SUM('Coordinates'[x]) + SUM('Coordinates'[y])")
+            self.assertNotIn("BLANK()", expression)
+            self.assertNotIn(_FALLBACK, expression)
+
+    def test_source_declaration_conflicts_ordinary_batch_retains_diagnostic_project(self):
+        from powerbi_import.openability import check_openability
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            output_dir = root / "output"
+            self._write_source_declaration_workbook(
+                input_dir, [{"formula": "MIN([x]) + MIN([y])"}], dependents=True)
+            self._run_batch_cli(root, input_dir, output_dir, expected_returncode=7)
+            project = output_dir / "SyntheticWorksheet"
+            self.assertTrue((project / "SyntheticWorksheet.pbip").is_file())
+            content = (project / "SyntheticWorksheet.SemanticModel" / "definition" /
+                       "tables" / "Coordinates.tmdl").read_text(encoding="utf-8")
+            self._assert_source_declaration_tmdl(content)
+            persisted_gate = json.loads(
+                (project / "openability_report.json").read_text(encoding="utf-8"))
+            for gate in (persisted_gate, check_openability(str(project)).to_dict()):
+                self.assertFalse(gate["openable"], gate)
+                self.assertTrue(gate["blocking_issues"], gate)
+            snapshot = output_dir / ".migration_extract" / "SyntheticWorksheet.twb"
+            calculations = json.loads(
+                (snapshot / "calculations.json").read_text(encoding="utf-8"))
+            datasources = json.loads(
+                (snapshot / "datasources.json").read_text(encoding="utf-8"))
+            canonical = next(item for item in calculations if item["name"] == "[WorksheetTotal]")
+            self.assertEqual(canonical["formula"], "SUM([x]) + SUM([y])")
+            self.assertEqual(canonical["_source_declaration_conflicts"], [{
+                "name": "[WorksheetTotal]", "datasource_name": "Synthetic",
+                "caption": "Coordinate Total", "formula": "MIN([x]) + MIN([y])",
+                "class": "tableau", "datatype": "real", "role": "measure",
+                "type": "quantitative",
+            }])
+            self.assertEqual(datasources[0]["calculations"], calculations)
+            quality = json.loads((output_dir / "migration_quality_SyntheticWorksheet.json")
+                                 .read_text(encoding="utf-8"))
+            self.assertEqual(quality["status"], "FAIL", quality)
+            environment = quality["evidence_manifest"]["environment"]
+            self.assertEqual(environment["desktop"]["status"], "not_run", environment)
+            for stage in ("semantic_execution", "refresh"):
+                self.assertEqual(environment[stage], "not_run", environment)
+            summary = json.loads((output_dir / "batch_quality_summary.json")
+                                 .read_text(encoding="utf-8"))
+            self.assertEqual(summary["generation_counts"]["complete"], 0, summary)
+            self.assertEqual(list(output_dir.rglob("*desktop*.json")), [])
+            self.assertEqual(list(output_dir.rglob("*native*.json")), [])
+            self.assertEqual(list(output_dir.rglob("*.png")), [])
+
+    def test_r4_fixed_explicit_sum_survives_ordinary_batch_cli(self):
+        from powerbi_import.openability import check_openability
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            output_dir = root / "output"
+            source = input_dir / "Housing.csv"
+            source.write_text("Sector,Homes\nA,12\nA,12\nB,7\n", encoding="utf-8")
+            workbook = ET.Element("workbook", version="18.1")
+            datasource = ET.SubElement(
+                ET.SubElement(workbook, "datasources"), "datasource",
+                name="Synthetic", caption="Synthetic", inline="true")
+            connection = ET.SubElement(datasource, "connection", {
+                "class": "textscan", "directory": str(input_dir),
+                "filename": source.name, "separator": ",", "header": "yes",
+            })
+            relation = ET.SubElement(
+                connection, "relation", type="table", name="Housing",
+                table="[Housing.csv]")
+            columns = ET.SubElement(relation, "columns", header="yes", separator=",")
+            records = ET.SubElement(connection, "metadata-records")
+            for ordinal, (name, datatype, role) in enumerate((
+                    ("Sector", "string", "dimension"), ("Homes", "real", "measure"))):
+                ET.SubElement(columns, "column", name=name, datatype=datatype,
+                              ordinal=str(ordinal))
+                ET.SubElement(datasource, "column", name=f"[{name}]",
+                              datatype=datatype, role=role)
+                record = ET.SubElement(records, "metadata-record", {"class": "column"})
+                for tag, value in (("local-name", f"[{name}]"), ("remote-name", name),
+                                   ("parent-name", "[Housing]"), ("local-type", datatype)):
+                    ET.SubElement(record, tag).text = value
+            calculation = ET.SubElement(
+                datasource, "column", name="[FixedHomes]", caption="Homes by Sector",
+                role="measure", datatype="real", type="quantitative")
+            ET.SubElement(calculation, "calculation", {
+                "class": "tableau", "formula": "{ FIXED [Sector] : MIN([Homes]) }",
+            })
+            worksheet = ET.SubElement(
+                ET.SubElement(workbook, "worksheets"), "worksheet", name="Housing Total")
+            table = ET.SubElement(worksheet, "table")
+            view = ET.SubElement(table, "view")
+            ET.SubElement(ET.SubElement(view, "datasources"), "datasource",
+                          name="Synthetic", caption="Synthetic")
+            dependencies = ET.SubElement(view, "datasource-dependencies", datasource="Synthetic")
+            dependencies.append(deepcopy(calculation))
+            ET.SubElement(dependencies, "column-instance", {
+                "column": "[FixedHomes]", "derivation": "Sum",
+                "name": "[sum:FixedHomes:qk]", "type": "quantitative",
+            })
+            ET.SubElement(table, "cols")
+            ET.SubElement(table, "rows").text = "[Synthetic].[sum:FixedHomes:qk]"
+            ET.SubElement(ET.SubElement(ET.SubElement(table, "panes"), "pane"),
+                          "mark", {"class": "Text"})
+            ET.ElementTree(workbook).write(
+                input_dir / "SyntheticR4.twb", encoding="utf-8", xml_declaration=True)
+
+            self._run_batch_cli(root, input_dir, output_dir)
+            project = output_dir / "SyntheticR4"
+            self.assertTrue((project / "SyntheticR4.pbip").is_file())
+            persisted_gate = json.loads(
+                (project / "openability_report.json").read_text(encoding="utf-8"))
+            self.assertTrue(persisted_gate["openable"], persisted_gate)
+            self.assertEqual(persisted_gate["blocking_issues"], [])
+            live_gate = check_openability(str(project)).to_dict()
+            self.assertTrue(live_gate["openable"], live_gate)
+            self.assertEqual(live_gate["blocking_issues"], [])
+
+            snapshot = output_dir / ".migration_extract" / "SyntheticR4.twb"
+            worksheets = json.loads((snapshot / "worksheets.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(worksheets), 1)
+            self.assertFalse(worksheets[0].get("dimensions"))
+            fields = [field for field in worksheets[0]["fields"]
+                      if field["name"].strip("[]") == "FixedHomes"]
+            self.assertEqual(len(fields), 1)
+            self.assertEqual(fields[0]["datasource"], "Synthetic")
+            self.assertEqual(fields[0]["aggregation"].lower(), "sum")
+            self.assertEqual(fields[0]["aggregation_evidence"], "explicit")
+            self.assertEqual(fields[0]["aggregation_candidates"], ["sum"])
+
+            content = (project / "SyntheticR4.SemanticModel" / "definition" /
+                       "tables" / "Housing.tmdl").read_text(encoding="utf-8")
+            expression = self._fixed_declaration(content)
+            note = "shelf (sum:) approximation; source filter scope and totals unverified"
+            self.assertEqual(expression,
+                f"/* {note} */ SUMX(VALUES('Housing'[Sector]), "
+                "CALCULATE(MIN('Housing'[Homes])))")
+            self.assertNotIn("BLANK()", expression)
+            self.assertNotIn("ALLEXCEPT", expression)
+            self.assertIn('annotation MigrationNote = "FIXED ' + note + '"', content)
+            pages = [json.loads(path.read_text(encoding="utf-8")) for path in
+                     (project / "SyntheticR4.Report" / "definition" / "pages").glob("*/page.json")]
+            self.assertEqual(sum(page["displayName"] == "Housing Total" for page in pages), 1)
+            quality = json.loads(
+                (output_dir / "migration_quality_SyntheticR4.json").read_text(encoding="utf-8"))
+            environment = quality["evidence_manifest"]["environment"]
+            self.assertEqual(environment["desktop"]["status"], "not_run", environment)
+            for stage in ("semantic_execution", "refresh"):
+                self.assertEqual(environment[stage], "not_run", environment)
+            self.assertEqual(list(output_dir.rglob("*desktop*.json")), [])
+            self.assertEqual(list(output_dir.rglob("*native*.json")), [])
+            self.assertEqual(list(output_dir.rglob("*.png")), [])
+
+    @staticmethod
+    def _fixed_datasource(name="Synthetic", table="Housing"):
+        return {
+            "name": name, "caption": name + " Caption", "id": name + "-id",
+            "luid": name + "-luid",
+            "connection": {"type": "SQL Server", "details": {
+                "server": "synthetic.invalid", "database": "synthetic"}},
+            "tables": [{"name": table, "columns": [
+                {"name": "Sector", "datatype": "string"},
+                {"name": "Homes", "datatype": "real"}]}],
+            "calculations": [{
+                "name": "[FixedHomes]", "caption": "Homes by Sector",
+                "datasource_name": name, "role": "measure", "datatype": "real",
+                "formula": "{ FIXED [Sector] : MIN([Homes]) }"}],
+            "columns": [], "relationships": [], "connection_map": {},
+        }
+
+    def _generate_fixed_tmdl(self, datasources, worksheets, **extra):
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary) / "Synthetic.SemanticModel"
+            objects = {"worksheets": worksheets, **extra}
+            with patch.dict(os.environ, {"TTPBI_VERIFIED_FIXED_SCOPES": "{}"}):
+                generate_tmdl(datasources, "Synthetic", objects, str(model_dir),
+                              parameterize=False)
+            return {path.stem: path.read_text(encoding="utf-8")
+                    for path in (model_dir / "definition" / "tables").glob("*.tmdl")}
+
+    def _fixed_declaration(self, content, raw_name="FixedHomes", caption="Homes by Sector"):
+        quoted_name = rf"'{re.escape(caption)}(?: \({re.escape(raw_name)}\))?'"
+        declaration = re.search(
+            rf"(?m)^\tmeasure (?:{quoted_name}|{re.escape(caption)}) =([^\n]*)",
+            content)
+        self.assertIsNotNone(declaration, content)
+        return re.sub(r"^/\* Tableau calculation;[^\n]*?\*/\s*", "",
+                      declaration.group(1).strip(), count=1)
+
+    def test_r4_fixed_sum_shelf_without_view_dimensions_survives_tmdl_postprocess(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        worksheets = [{"name": "Synthetic Total", "dimensions": [], "fields": [{
+            "name": "[FixedHomes]", "datasource": "Synthetic", "aggregation": "SUM"}]}]
+        with self.assertLogs("powerbi_import.tmdl_generator", level="WARNING") as logs:
+            content = self._generate_fixed_tmdl(
+                [self._fixed_datasource()], worksheets)["Housing"]
+        expression = self._fixed_declaration(content)
+        note = ("shelf (sum:) approximation; source filter scope and totals unverified")
+        self.assertEqual(expression,
+            f"/* {note} */ SUMX(VALUES('Housing'[Sector]), "
+            "CALCULATE(MIN('Housing'[Homes])))")
+        self.assertIn('annotation MigrationNote = "FIXED ' + note + '"', content)
+        self.assertTrue(any("FIXED " + note in message for message in logs.output),
+                        logs.output)
+        self.assertNotIn("BLANK()", expression)
+        self.assertNotIn("ALLEXCEPT", content)
+        self.assertEqual(validate_dax_expression(expression), [])
+
+    def test_fixed_missing_or_ambiguous_shelf_evidence_serializes_blank(self):
+        valid = {"name": "[FixedHomes]", "datasource": "Synthetic",
+                 "aggregation": "SUM"}
+        cases = {
+            "no usage": [],
+            "missing aggregation": [{key: value for key, value in valid.items()
+                                     if key != "aggregation"}],
+            "missing datasource": [{key: value for key, value in valid.items()
+                                    if key != "datasource"}],
+            "unknown datasource": [{**valid, "datasource": "Unknown"}],
+            "unknown calculation": [{**valid, "name": "[Unknown]"}],
+            "attr": [{**valid, "aggregation": "ATTR"}],
+            "sum and avg": [valid, {**valid, "aggregation": "AVG"}],
+            "sum and missing": [valid, {key: value for key, value in valid.items()
+                                        if key != "aggregation"}],
+            "sum and attr": [valid, {**valid, "aggregation": "ATTR"}],
+        }
+        for label, fields in cases.items():
+            with self.subTest(evidence=label):
+                worksheets = [{"name": f"Synthetic {index}", "fields": [field]}
+                              for index, field in enumerate(fields)]
+                content = self._generate_fixed_tmdl(
+                    [self._fixed_datasource()], worksheets)["Housing"]
+                _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
+                self.assertNotIn("shelf (sum:) approximation", content)
+                self.assertNotIn("ALLEXCEPT", content)
+
+    def test_fixed_datasource_and_calculation_caption_aliases_reach_emitted_tmdl(self):
+        for datasource_key in ("name", "caption", "id", "luid"):
+            for calculation_alias in ("[FixedHomes]", "FixedHomes", "Homes by Sector"):
+                with self.subTest(datasource_key=datasource_key,
+                                  calculation_alias=calculation_alias):
+                    datasource = self._fixed_datasource()
+                    worksheets = [{"name": "Synthetic Total", "fields": [{
+                        "name": calculation_alias,
+                        "datasource": "[" + datasource[datasource_key] + "]",
+                        "aggregation": "sum"}]}]
+                    content = self._generate_fixed_tmdl(
+                        [datasource], worksheets)["Housing"]
+                    self.assertIn("SUMX(VALUES('Housing'[Sector])",
+                                  self._fixed_declaration(content))
+                    self.assertIn('annotation MigrationNote = "FIXED shelf (sum:)', content)
+
+    def test_fixed_same_caption_in_different_datasources_does_not_share_shelf(self):
+        first = self._fixed_datasource()
+        second = self._fixed_datasource("OtherSynthetic", "OtherHousing")
+        second["tables"][0]["columns"] = [
+            {"name": "OtherSector", "datatype": "string"},
+            {"name": "OtherHomes", "datatype": "real"}]
+        second["calculations"][0]["name"] = "[OtherFixedHomes]"
+        second["calculations"][0]["formula"] = (
+            "{ FIXED [OtherSector] : MIN([OtherHomes]) }")
+        for second_shelf in (None, "AVG"):
+            with self.subTest(second_shelf=second_shelf):
+                worksheets = [{"name": "Synthetic Sum", "fields": [{
+                    "name": "Homes by Sector", "datasource": "Synthetic Caption",
+                    "aggregation": "SUM"}]}]
+                if second_shelf:
+                    worksheets.append({"name": "Synthetic Average", "fields": [{
+                        "name": "Homes by Sector", "datasource": "OtherSynthetic-luid",
+                        "aggregation": second_shelf}]})
+                contents = self._generate_fixed_tmdl(
+                    deepcopy([first, second]), worksheets)
+                self.assertIn("SUMX(VALUES('Housing'[Sector])",
+                              self._fixed_declaration(contents["Housing"]))
+                other = self._fixed_declaration(contents["OtherHousing"], "OtherFixedHomes")
+                if second_shelf:
+                    self.assertIn("shelf (avg:) approximation", other)
+                    self.assertIn("AVERAGEX(VALUES('OtherHousing'[OtherSector])", other)
+                    self.assertIn("CALCULATE(MIN('OtherHousing'[OtherHomes]))", other)
+                    self.assertNotIn("shelf (sum:)", other)
+                else:
+                    _assert_unsupported(self, other, "FIXED", "grain")
+
+    def test_fixed_second_datasource_owns_identically_named_physical_columns(self):
+        first = self._fixed_datasource()
+        first["calculations"] = []
+        second = self._fixed_datasource("OtherSynthetic", "OtherHousing")
+        worksheets = [{"name": "Second Average", "fields": [{
+            "name": "[FixedHomes]", "datasource": "OtherSynthetic",
+            "aggregation": "AVG"}]}]
+        contents = self._generate_fixed_tmdl([first, second], worksheets)
+        expression = self._fixed_declaration(contents["OtherHousing"])
+        self.assertEqual(expression,
+            "/* shelf (avg:) approximation; source filter scope and totals "
+            "unverified */ AVERAGEX(VALUES('OtherHousing'[Sector]), "
+            "CALCULATE(MIN('OtherHousing'[Homes])))")
+        self.assertNotIn("'Housing'[", expression)
+        self.assertNotIn("measure 'Homes by Sector'", contents["Housing"])
+
+    def test_fixed_foreign_measure_caption_does_not_shadow_local_physical_key(self):
+        local = self._fixed_datasource()
+        foreign = self._fixed_datasource("OtherSynthetic", "OtherHousing")
+        foreign["calculations"] = [{
+            "name": "[SectorMeasure]", "caption": "Sector",
+            "datasource_name": "OtherSynthetic", "role": "MEASURE",
+            "datatype": "real", "formula": "SUM([Homes])"}]
+        worksheets = [{"name": "Local Average", "fields": [{
+            "name": "[FixedHomes]", "datasource": "Synthetic",
+            "aggregation": "AVG", "aggregation_evidence": "explicit",
+            "aggregation_candidates": ["avg"]}]}]
+        contents = self._generate_fixed_tmdl([local, foreign], worksheets)
+        content = contents["Housing"]
+        expression = self._fixed_declaration(content)
+        note = "shelf (avg:) approximation; source filter scope and totals unverified"
+        self.assertEqual(expression,
+            f"/* {note} */ AVERAGEX(VALUES('Housing'[Sector]), "
+            "CALCULATE(MIN('Housing'[Homes])))")
+        self.assertIn('annotation MigrationNote = "FIXED ' + note + '"', content)
+        self.assertNotIn("BLANK()", expression)
+        self.assertNotIn("ALLEXCEPT", expression)
+        self.assertEqual(self._fixed_declaration(
+            contents["OtherHousing"], "SectorMeasure", "Sector (Measure)"),
+            "SUM('OtherHousing'[Homes])")
+
+    def test_fixed_local_measure_caption_collision_refuses_physical_key(self):
+        datasource = self._fixed_datasource()
+        datasource["calculations"].append({
+            "name": "[SectorMeasure]", "caption": "Sector",
+            "datasource_name": "Synthetic", "role": "MEASURE",
+            "datatype": "real", "formula": "SUM([Homes])"})
+        worksheets = [{"name": "Local Average", "fields": [{
+            "name": "[FixedHomes]", "datasource": "Synthetic",
+            "aggregation": "AVG", "aggregation_evidence": "explicit",
+            "aggregation_candidates": ["avg"]}]}]
+        content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
+        expression = self._fixed_declaration(content)
+        _assert_unsupported(self, expression, "FIXED", "physical")
+        self.assertNotIn("AVERAGEX", expression)
+        self.assertNotIn("approximation;", expression)
+
+    def test_fixed_same_datasource_one_hop_dependency_and_reference_shelf(self):
+        for shelf, iterator in (("SUM", "SUMX"), ("AVG", "AVERAGEX"),
+                                ("MIN", "MINX"), ("MAX", "MAXX")):
+            for outer in (None, "SUM", "AVG", "MIN", "MAX"):
+                formula = f"{outer}([FixedHomes])" if outer else "[FixedHomes]"
+                with self.subTest(shelf=shelf, formula=formula):
+                    datasource = self._fixed_datasource()
+                    datasource["calculations"].append({
+                        "name": "[Consumer]", "caption": "Consumer",
+                        "datasource_name": "Synthetic", "role": "measure",
+                        "datatype": "real", "formula": formula})
+                    worksheets = [{"name": "Consumer Total", "fields": [{
+                        "name": "[Consumer]", "datasource": "Synthetic",
+                        "aggregation": shelf, "aggregation_evidence": "explicit",
+                        "aggregation_candidates": [shelf.lower()]}]}]
+                    content = self._generate_fixed_tmdl(
+                        [datasource], worksheets)["Housing"]
+                    fixed = self._fixed_declaration(content)
+                    consumer = self._fixed_declaration(content, "Consumer", "Consumer")
+                    if outer is not None and outer != shelf:
+                        _assert_unsupported(self, fixed, "FIXED")
+                        _assert_unsupported(self, consumer)
+                        self.assertNotIn("approximation;", content)
+                    else:
+                        expected = (
+                            f"/* shelf ({shelf.lower()}:) approximation; source filter "
+                            f"scope and totals unverified */ {iterator}("
+                            "VALUES('Housing'[Sector]), "
+                            "CALCULATE(MIN('Housing'[Homes])))")
+                        self.assertEqual(fixed, expected)
+                        self.assertEqual(consumer, expected)
+
+    def test_fixed_dependency_cycles_and_longer_chains_do_not_infer_shelf(self):
+        cases = {
+            "self cycle": [("Consumer", "SUM([Consumer])")],
+            "mutual cycle": [("Consumer", "[Other]"), ("Other", "[Consumer]")],
+            "reference chain": [("Other", "[FixedHomes]"),
+                                ("Consumer", "[Other]")],
+            "aggregate chain": [("Other", "SUM([FixedHomes])"),
+                                ("Consumer", "SUM([Other])")],
+        }
+        for label, declarations in cases.items():
+            with self.subTest(dependency=label):
+                datasource = self._fixed_datasource()
+                datasource["calculations"].extend({
+                    "name": f"[{name}]", "caption": name,
+                    "datasource_name": "Synthetic", "role": "measure",
+                    "datatype": "real", "formula": formula,
+                } for name, formula in declarations)
+                worksheets = [{"name": "Consumer Total", "fields": [{
+                    "name": "[Consumer]", "datasource": "Synthetic",
+                    "aggregation": "SUM"}]}]
+                content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
+                _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
+                self.assertNotIn("approximation;", content)
+                self.assertNotIn("SUMX(VALUES(", content)
+
+    def test_fixed_ambiguous_dependency_target_does_not_infer_shelf(self):
+        datasource = self._fixed_datasource()
+        datasource["calculations"].append(dict(
+            datasource["calculations"][0], name="[OtherFixedHomes]"))
+        datasource["calculations"].append({
+            "name": "[Consumer]", "caption": "Consumer",
+            "datasource_name": "Synthetic", "role": "measure", "datatype": "real",
+            "formula": "SUM([Homes by Sector])"})
+        worksheets = [{"name": "Consumer Total", "fields": [{
+            "name": "[Consumer]", "datasource": "Synthetic", "aggregation": "SUM"}]}]
+        content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
+        _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
+        _assert_unsupported(self, self._fixed_declaration(
+            content, "Consumer", "Consumer"))
+        self.assertNotIn("approximation;", content)
+
+    def test_fixed_cross_datasource_dependency_does_not_infer_shelf(self):
+        first = self._fixed_datasource()
+        second = self._fixed_datasource("OtherSynthetic", "OtherHousing")
+        second["calculations"] = [{
+            "name": "[Consumer]", "caption": "Consumer",
+            "datasource_name": "OtherSynthetic", "role": "measure",
+            "datatype": "real", "formula": "SUM([FixedHomes])"}]
+        worksheets = [{"name": "Foreign Consumer", "fields": [{
+            "name": "[Consumer]", "datasource": "OtherSynthetic",
+            "aggregation": "SUM"}]}]
+        contents = self._generate_fixed_tmdl([first, second], worksheets)
+        _assert_unsupported(self, self._fixed_declaration(contents["Housing"]), "FIXED")
+        _assert_unsupported(self, self._fixed_declaration(
+            contents["OtherHousing"], "Consumer", "Consumer"))
+        self.assertNotIn("approximation;", "\n".join(contents.values()))
+
+    def test_fixed_extracted_measure_values_conflict_prevents_approximation(self):
+        for derivations in (("Sum", "Avg"), ("Avg", "Sum")):
+            with self.subTest(derivations=derivations):
+                worksheet = ET.fromstring("""
+                    <worksheet name="Conflicting Measure Values"><table>
+                      <cols>[Synthetic].[:Measure Names]</cols>
+                      <rows>[Synthetic].[Multiple Values]</rows>
+                      <datasource-dependencies datasource="Synthetic">
+                        <column name="[FixedHomes]" role="measure" />
+                      </datasource-dependencies>
+                    </table></worksheet>""")
+                dependencies = worksheet.find("./table/datasource-dependencies")
+                for derivation in derivations:
+                    ET.SubElement(dependencies, "column-instance", {
+                        "column": "[FixedHomes]", "derivation": derivation,
+                        "name": f"[{derivation.lower()}:FixedHomes:qk]"})
+                fields = extract_worksheet_fields(worksheet)
+                fixed_fields = [field for field in fields if field["name"] == "FixedHomes"]
+                self.assertEqual(len(fixed_fields), 1)
+                field = fixed_fields[0]
+                self.assertEqual(field["aggregation_evidence"], "explicit")
+                self.assertEqual(field["aggregation_candidates"],
+                                 [value.lower() for value in derivations])
+                self.assertEqual(field["aggregation"], derivations[0].lower())
+                content = self._generate_fixed_tmdl([self._fixed_datasource()], [{
+                    "name": worksheet.get("name"), "fields": fields}])["Housing"]
+                _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
+                self.assertNotIn("approximation;", content)
+
+    def test_fixed_extracted_measure_values_without_aggregation_is_not_evidence(self):
+        for instances, evidence in (("", "inferred"), (
+                '<column-instance column="[FixedHomes]" derivation="User" '
+                'name="[usr:FixedHomes:qk]" />', "unspecified")):
+            with self.subTest(evidence=evidence):
+                worksheet = ET.fromstring(f"""
+                    <worksheet name="Unspecified Measure Values"><table>
+                      <cols>[Synthetic].[:Measure Names]</cols>
+                      <rows>[Synthetic].[Multiple Values]</rows>
+                      <datasource-dependencies datasource="Synthetic">
+                        <column name="[FixedHomes]" role="measure" />
+                        {instances}
+                      </datasource-dependencies>
+                    </table></worksheet>""")
+                fields = extract_worksheet_fields(worksheet)
+                fixed_fields = [field for field in fields if field["name"] == "FixedHomes"]
+                self.assertEqual(len(fixed_fields), 1)
+                field = fixed_fields[0]
+                self.assertEqual(field["aggregation_candidates"], ["unspecified"])
+                self.assertEqual(field["aggregation_evidence"], evidence)
+                if evidence == "inferred":
+                    self.assertEqual(field["aggregation"], "sum")
+                else:
+                    self.assertNotIn("aggregation", field)
+                content = self._generate_fixed_tmdl([self._fixed_datasource()], [{
+                    "name": worksheet.get("name"), "fields": fields}])["Housing"]
+                _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
+                self.assertNotIn("approximation;", content)
+
+    def test_fixed_extracted_normal_sum_prefix_enables_approximation(self):
+        worksheet = ET.fromstring("""
+            <worksheet name="Explicit Sum"><table>
+              <rows>[Synthetic].[sum:FixedHomes:qk]</rows>
+            </table></worksheet>""")
+        fields = extract_worksheet_fields(worksheet)
+        self.assertEqual(len(fields), 1)
+        self.assertEqual(fields[0]["name"], "FixedHomes")
+        self.assertEqual(fields[0]["aggregation"], "sum")
+        self.assertEqual(fields[0]["aggregation_evidence"], "explicit")
+        self.assertEqual(fields[0]["aggregation_candidates"], ["sum"])
+        content = self._generate_fixed_tmdl([self._fixed_datasource()], [{
+            "name": worksheet.get("name"), "fields": fields}])["Housing"]
+        self.assertEqual(self._fixed_declaration(content),
+            "/* shelf (sum:) approximation; source filter scope and totals "
+            "unverified */ SUMX(VALUES('Housing'[Sector]), "
+            "CALCULATE(MIN('Housing'[Homes])))")
+
     def test_unsupported_makepoint_measure_is_retained_with_diagnostic(self):
         table = {
             "name": "Zone",
@@ -1271,29 +2513,39 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                 "engine_support_verified": True,
             }
             model_dir = root / "Demo.SemanticModel"
-            generate_tmdl(
-                [datasource], "Demo",
-                {"verified_fixed_scopes": {
-                    "Synthetic": {"FixedHousing": scope},
-                }},
-                str(model_dir),
-            )
-
-            content = (model_dir / "definition" / "tables" / "Zone.tmdl").read_text(
-                encoding="utf-8")
-            declaration = re.search(
-                r"(?m)^\tmeasure 'Logements par secteur' =([^\n]*)", content)
-            self.assertIsNotNone(declaration, content)
-            expression = declaration.group(1).strip()
-            self.assertNotIn(_FALLBACK, expression)
-            self.assertTrue(
-                expression.endswith(
-                    "SUMX(SUMMARIZE('Zone', 'Zone'[Secteur]), "
-                    "CALCULATE(MIN('Zone'[Logements])))"),
-                expression,
-            )
             from powerbi_import.dax_validator import validate_dax_expression
-            self.assertEqual(validate_dax_expression(expression), [])
+            for shelf in (None, "SUM"):
+                with self.subTest(shelf=shelf):
+                    objects = {"verified_fixed_scopes": {
+                        "Synthetic": {"FixedHousing": scope},
+                    }}
+                    if shelf is not None:
+                        objects["worksheets"] = [{"name": "Synthetic Total", "fields": [{
+                            "name": "[FixedHousing]", "datasource": "Synthetic",
+                            "aggregation": shelf, "aggregation_evidence": "explicit",
+                            "aggregation_candidates": [shelf.lower()]}]}]
+                    generate_tmdl(
+                        [deepcopy(datasource)], "Demo", objects, str(model_dir),
+                    )
+
+                    content = (
+                        model_dir / "definition" / "tables" / "Zone.tmdl"
+                    ).read_text(encoding="utf-8")
+                    declaration = re.search(
+                        r"(?m)^\tmeasure 'Logements par secteur' =([^\n]*)", content)
+                    self.assertIsNotNone(declaration, content)
+                    expression = declaration.group(1).strip()
+                    self.assertNotIn(_FALLBACK, expression)
+                    self.assertTrue(
+                        expression.endswith(
+                            "SUMX(SUMMARIZE('Zone', 'Zone'[Secteur]), "
+                            "CALCULATE(MIN('Zone'[Logements])))"),
+                        expression,
+                    )
+                    self.assertNotIn("approximation", expression.lower())
+                    self.assertNotRegex(
+                        content, r"(?im)^\s*annotation MigrationNote = .*approximation")
+                    self.assertEqual(validate_dax_expression(expression), [])
 
             environment_model_dir = root / "EnvironmentDemo.SemanticModel"
             with patch.dict(os.environ, {

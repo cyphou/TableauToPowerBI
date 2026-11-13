@@ -309,7 +309,7 @@ project-root/
 
 The `services/` directory is **critical** for testability. Each file wraps one Azure service behind an interface. Handlers receive services via DI; never import SDKs directly.
 
-> Full service abstraction architecture: see [service-abstraction.md](.github/agents/shared-references/service-abstraction.md).
+> Full service abstraction architecture: see [service-abstraction.md](service-abstraction.md).
 
 ---
 

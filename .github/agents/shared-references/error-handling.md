@@ -334,7 +334,7 @@ app.http('createItem', {
 
 ---
 
-Python: [runtimes/python.md](.github/agents/shared-references/runtimes/python.md). C#: [runtimes/dotnet.md](.github/agents/shared-references/runtimes/dotnet.md).
+Python: [runtimes/python.md](runtimes/python.md). C#: [runtimes/dotnet.md](runtimes/dotnet.md).
 
 ---
 

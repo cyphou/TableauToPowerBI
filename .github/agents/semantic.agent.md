@@ -62,6 +62,15 @@ All TMDL serialization functions in `tmdl_generator.py`:
 - `_write_perspectives_tmdl()`, `_write_culture_tmdl()`, `_write_multi_language_cultures()`
 
 ### Semantic Model Helpers
+- Calculation identity is datasource/raw name, including worksheet-only
+  `datasource_name`. Preserve `_source_declaration_conflicts` and emit diagnostic
+  TODO/BLANK for affected calculations and transitive exact-raw-reference
+  consumers before literal, constant-one or FIXED optimizations. Keep unrelated
+  valid calculations; missing ownership and foreign homonyms are not local proof.
+- FIXED keeps the exact verified path first. Otherwise, only explicit consistent
+  SUM/AVG/MIN/MAX shelf evidence, all resolved same-table physical keys and a
+  supported direct-column inner aggregate permit a warned iterator. Inferred
+  SUM defaults are not evidence; missing or ambiguous evidence remains diagnostic.
 - `_map_semantic_role_to_category()` — Tableau semantic role → PBI dataCategory
 - `_get_display_folder()` — column folder assignment
 - `_get_format_string()`, `_convert_tableau_format_to_pbi()` — number format conversion

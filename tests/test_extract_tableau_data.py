@@ -2083,6 +2083,8 @@ class TestWorksheetPillContract(unittest.TestCase):
         field = self._date('mn:Event Date:ok', 'ordinal')
         self.assertEqual(field, {
             'name': 'Event Date', 'shelf': 'columns', 'datasource': 'ds',
+            'aggregation_candidates': ['unspecified'],
+            'aggregation_evidence': 'unspecified',
             'derivation': 'Month', 'date_part': 'mn',
             'is_discrete': True, 'is_continuous': False,
             'datatype': 'date', 'role': 'dimension',
@@ -2092,6 +2094,8 @@ class TestWorksheetPillContract(unittest.TestCase):
         field = self._date('tmn:Event Date:qk', 'quantitative')
         self.assertEqual(field, {
             'name': 'Event Date', 'shelf': 'columns', 'datasource': 'ds',
+            'aggregation_candidates': ['unspecified'],
+            'aggregation_evidence': 'unspecified',
             'derivation': 'Month', 'date_part': 'tmn',
             'is_discrete': False, 'is_continuous': True,
             'datatype': 'date', 'role': 'dimension',
@@ -2147,8 +2151,12 @@ class TestWorksheetPillContract(unittest.TestCase):
         fields = self.ext.extract_worksheet_fields(worksheet)
         self.assertEqual(
             [f for f in fields if f['shelf'] == 'detail'],
-            [{'name': 'E', 'shelf': 'detail', 'datasource': 'ds'},
-             {'name': 'F', 'shelf': 'detail', 'datasource': 'ds'}])
+                        [{'name': 'E', 'shelf': 'detail', 'datasource': 'ds',
+                            'aggregation_candidates': ['unspecified'],
+                            'aggregation_evidence': 'unspecified'},
+                         {'name': 'F', 'shelf': 'detail', 'datasource': 'ds',
+                            'aggregation_candidates': ['unspecified'],
+                            'aggregation_evidence': 'unspecified'}])
         self.assertNotIn('Filter Only', [f['name'] for f in fields])
         self.assertFalse(any(f['shelf'] == 'filter' for f in fields))
         self.assertEqual(self.ext.extract_worksheet_slices(worksheet), [
@@ -2204,9 +2212,11 @@ class TestWorksheetPillContract(unittest.TestCase):
         fields = self.ext.extract_worksheet_fields(self._scatter_xml())
         self.assertEqual([f for f in fields if f['name'] == 'A'], [
             {'name': 'A', 'shelf': 'columns', 'datasource': 'ds',
-             'aggregation': 'sum'},
+               'aggregation': 'sum', 'aggregation_candidates': ['sum'],
+               'aggregation_evidence': 'explicit'},
             {'name': 'A', 'shelf': 'text', 'datasource': 'ds',
-             'aggregation': 'cnt'},
+               'aggregation': 'cnt', 'aggregation_candidates': ['cnt'],
+               'aggregation_evidence': 'explicit'},
         ])
 
 

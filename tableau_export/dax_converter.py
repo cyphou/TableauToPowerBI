@@ -293,7 +293,8 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                                     validate_output=False,
                                     fallback_on_invalid=False,
                                     verified_row_scope=None,
-                                    verified_fixed_scope=None):
+                                    verified_fixed_scope=None,
+                                    fixed_shelf_aggregation=None):
     """
     Converts a Tableau formula to DAX with context resolution.
 
@@ -320,6 +321,9 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         verified_fixed_scope: Optional semantic-owner proof for a dedicated
             SUM of a single-table FIXED MIN at distinct FIXED-key grain. See
             ``_compile_verified_fixed_sum``. No proof is inferred here.
+        fixed_shelf_aggregation: Independently resolved SUM/AVG/MIN/MAX shelf
+            enabling a bounded physical-column FIXED approximation when exact
+            proof is unavailable. Source filter scope and totals stay unverified.
 
     Returns:
         str: Valid DAX formula
@@ -360,6 +364,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # Normalize before resolving references so captions/parameter values
     # introduced later cannot be mistaken for source-language literals.
     dax = _convert_null_literals(dax)
+    fixed_source = dax
 
     # === Phase 0: Strip secondary-datasource prefixes ===
     # Tableau data blends use [federated.xxxID].[Column] references.
@@ -390,11 +395,11 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
             column_table_map=column_table_map, measure_names=measure_names,
             table_columns=table_columns, is_calc_column=is_calc_column,
             scope=verified_fixed_scope)
-        if fixed_sum is None:
+        if fixed_sum is None and fixed_shelf_aggregation is None:
             return _unsupported_conversion(
                 'FIXED SUM requires verified source filter scope, physical '
                 'dimension grain, shelf aggregation and total grain')
-        if validate_output:
+        if fixed_sum is not None and validate_output:
             try:
                 from powerbi_import.dax_validator import validate_dax_expression
                 if validate_dax_expression(fixed_sum):
@@ -403,7 +408,21 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
             except (ImportError, OSError, ValueError):
                 return _unsupported_conversion(
                     'verified FIXED SUM could not be validated')
-        return fixed_sum
+        if fixed_sum is not None:
+            return fixed_sum
+    if fixed_shelf_aggregation is not None and re.search(
+            r'\{\s*FIXED\b', masked, re.IGNORECASE):
+        source_masked, source_restore = _protect_source_tokens(fixed_source)
+        approximation = _compile_approximate_fixed_shelf(
+            source_masked, source_restore, table_name=table_name,
+            column_table_map=column_table_map, measure_names=measure_names,
+            table_columns=table_columns, is_calc_column=is_calc_column,
+            shelf=fixed_shelf_aggregation, calc_map=calc_map)
+        if approximation is not None:
+            return approximation
+        return _unsupported_conversion(
+            'FIXED shelf approximation requires supported single-table '
+            'physical dimensions and a direct physical-column aggregation')
     if table_columns is not None and re.search(r'\{\s*FIXED\b', masked, re.IGNORECASE):
         return _unsupported_conversion(
             'FIXED requires verified source filter scope, dimension grain, '
@@ -928,6 +947,105 @@ def _compile_verified_fixed_sum(masked, restore, *, table_name, column_table_map
 
     keys = ', '.join(column(name) for name in names)
     return f"SUMX(SUMMARIZE({table}, {keys}), CALCULATE(MIN({column(value[3])})))"
+
+
+def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
+                                     column_table_map, measure_names,
+                                     table_columns, is_calc_column, shelf,
+                                     calc_map=None):
+    """Approximate a resolved shelf over distinct, physically bound FIXED keys."""
+    from typing import cast
+
+    iterators = {'SUM': 'SUMX', 'AVG': 'AVERAGEX', 'MIN': 'MINX', 'MAX': 'MAXX'}
+    if not isinstance(shelf, str):
+        return None
+    shelf = shelf.strip().upper()
+    if (shelf not in iterators or is_calc_column
+            or not isinstance(table_name, str) or not table_name
+            or not isinstance(table_columns, (list, tuple, set, frozenset))
+            or any(not isinstance(name, str) or not name for name in table_columns)):
+        return None
+    match = re.fullmatch(
+        r'\s*(?:(?P<outer>SUM|AVG|MIN|MAX)\s*\(\s*)?'
+        r'\{\s*FIXED\s+(?P<dims>[^:{}()]+)\s*:\s*'
+        r'(?P<value>[^{}:]+)\}\s*(?(outer)\))\s*',
+        masked, re.IGNORECASE | re.DOTALL,
+    )
+    if not match or (match.group('outer') and match.group('outer').upper() != shelf):
+        return None
+    aggregates = {
+        'SUM': 'SUM', 'AVG': 'AVERAGE', 'AVERAGE': 'AVERAGE',
+        'MIN': 'MIN', 'MAX': 'MAX', 'COUNT': 'COUNT', 'COUNTD': 'DISTINCTCOUNT',
+        'COUNTA': 'COUNTA', 'MEDIAN': 'MEDIAN', 'STDEV': 'STDEV.S',
+        'STDEVP': 'STDEV.P', 'VAR': 'VAR.S', 'VARP': 'VAR.P',
+    }
+
+    def parse_reference_expression(part):
+        text = restore(part)
+        text = re.sub(
+            r'(?P<owner>\[(?:[^\]]|\]\])+\])\s*\.\s*'
+            r'(?P<field>\[(?:[^\]]|\]\])+\])|'
+            + _RE_NULL_PROTECTED_TOKEN.pattern,
+            lambda token: (
+                "'" + token.group('owner')[1:-1].replace(']]', ']').replace("'", "''")
+                + "'" + token.group('field')
+                if token.group('owner') else token.group(0)),
+            text,
+        )
+        text = _resolve_references(text, calc_map or {}, {}, False, {})
+        return _ungroup_source(_SourceExpressionParser(text).parse())
+
+    try:
+        dimensions = [
+            parse_reference_expression(part)
+            for part in match.group('dims').split(',')
+        ]
+        aggregate = parse_reference_expression(match.group('value'))
+    except (_SourceExpressionError, RecursionError):
+        return None
+    if (not dimensions or len(dimensions) > 32
+            or any(node[0] != 'ref' for node in dimensions)
+            or aggregate[0] != 'call'):
+        return None
+    aggregate = cast(tuple[str, str, tuple[tuple[object, ...], ...]], aggregate)
+    if (aggregate[1].upper() not in aggregates
+            or len(aggregate[2]) != 1):
+        return None
+    value = cast(tuple[object, ...], _ungroup_source(aggregate[2][0]))
+    if value[0] != 'ref':
+        return None
+    dimensions = cast(list[tuple[str, str, str | None, str]], dimensions)
+    value = cast(tuple[str, str, str | None, str], value)
+    names = [node[3] for node in dimensions]
+    if len({name.casefold() for name in names}) != len(names):
+        return None
+    available = set(table_columns)
+    measures = {name.casefold() for name in measure_names if isinstance(name, str)}
+    for node in [*dimensions, value]:
+        owner, name = node[2], node[3]
+        if (name not in available or name.casefold() in measures
+                or (owner is not None and owner != table_name)
+                or (name in column_table_map and column_table_map[name] != table_name)):
+            return None
+    table = "'" + table_name.replace("'", "''") + "'"
+
+    def column(name):
+        return table + '[' + name.replace(']', ']]') + ']'
+
+    keys = ', '.join(column(name) for name in names)
+    domain = (f'VALUES({keys})' if len(names) == 1
+              else f'SUMMARIZE({table}, {keys})')
+    inner = aggregates[aggregate[1].upper()] + '(' + column(value[3]) + ')'
+    expression = (
+        f'/* shelf ({shelf.lower()}:) approximation; source filter scope and '
+        f'totals unverified */ {iterators[shelf]}({domain}, CALCULATE({inner}))')
+    try:
+        from powerbi_import.dax_validator import validate_dax_expression
+        if validate_dax_expression(expression):
+            return None
+    except (ImportError, OSError, ValueError):
+        return None
+    return expression
 
 
 def compile_verified_fixed_dimension(formula, *, table_name, table_columns,

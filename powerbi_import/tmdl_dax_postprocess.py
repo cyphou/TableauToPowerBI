@@ -806,6 +806,28 @@ def propagate_unsupported_model_dependencies(
 
         namespace = identity.get('datasource_name') if isinstance(identity, dict) else None
         inventory = source_inventory or {}
+        consumer_records = (inventory.get(consumer_id.casefold(), [])
+                            if consumer_id else [])
+        scoped_consumer = any(matches_source_record(item, record, namespace)
+                              for record in consumer_records)
+
+        def scoped_records(name):
+            records = inventory.get(name.casefold(), [])
+            if scoped_consumer:
+                records = [record for record in records
+                           if record[3] is None or record[3] == namespace]
+            return records
+
+        def scoped_targets(name):
+            targets = targets_by_source.get(name.casefold(), [])
+            if scoped_consumer:
+                records = inventory.get(name.casefold(), [])
+                targets = [target for target in targets if not any(
+                    record[3] is not None and record[3] != namespace
+                    and matches_source_record(objects[target][2], record, record[3])
+                    for record in records)]
+            return targets
+
         calculation_refs = False
         for _, name, _, _, _, _ in source_refs:
             records = inventory.get(name.casefold(), [])
@@ -815,14 +837,13 @@ def propagate_unsupported_model_dependencies(
                     or (records and not physical)):
                 calculation_refs = True
                 break
-        consumer_records = (inventory.get(consumer_id.casefold(), [])
-                            if consumer_id else [])
+        consumer_records = scoped_records(consumer_id) if consumer_id else []
         if calculation_refs or consumer_records:
             if source_inventory is None or not consumer_id:
                 return 'unresolved', source_refs[0][1], []
             if not consumer_records:
                 return 'unresolved', consumer_id, []
-            if targets_by_source.get(consumer_id.casefold(), []) != [index]:
+            if scoped_targets(consumer_id) != [index]:
                 return 'ambiguous', consumer_id, []
             if len(consumer_records) > 1:
                 if (not matches_source_record(item, consumer_records[0], namespace)
@@ -843,7 +864,7 @@ def propagate_unsupported_model_dependencies(
             if owner is not None or before.endswith('.') or after.startswith('.'):
                 problems.append(('unresolved', name))
                 continue
-            records = inventory.get(name.casefold(), [])
+            records = scoped_records(name)
             physical = list(dict.fromkeys(physical_by_source.get(name.casefold(), [])))
             raw_match = any(record[0].casefold() == name.casefold() for record in records)
 
@@ -867,7 +888,7 @@ def propagate_unsupported_model_dependencies(
                 continue
 
             record = records[0]
-            targets = targets_by_source.get(record[0].casefold(), [])
+            targets = scoped_targets(record[0])
             if len(records) > 1:
                 if (not matches_source_record(item, consumer_records[0], namespace)
                         or record[3] != namespace

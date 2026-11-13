@@ -427,7 +427,7 @@ Webview watches all `.azure/.preview-temp/`, automatically picking up manifest u
 > | `SQL_CONNECTION_STRING` | `ConnectionStrings:Sql` |
 > | `AZURE_OPENAI_ENDPOINT` / `_API_KEY` | `OpenAI:Endpoint` / `OpenAI:ApiKey` (typed `IOptions<T>`) |
 >
-> Production `ConnectionStrings:*` values must be **resource URIs** (e.g., `https://<account>.blob.core.windows.net`) authenticated by `DefaultAzureCredential` (Managed Identity), never raw account keys. Full mapping: [runtimes/dotnet.md](.github/agents/shared-references/runtimes/dotnet.md#managed-identity--quick-reference).
+> Production `ConnectionStrings:*` values must be **resource URIs** (e.g., `https://<account>.blob.core.windows.net`) authenticated by `DefaultAzureCredential` (Managed Identity), never raw account keys. Full mapping: [runtimes/dotnet.md](../shared-references/runtimes/dotnet.md#managed-identity--quick-reference).
 
 ### Essential vs Enhancement Classification
 

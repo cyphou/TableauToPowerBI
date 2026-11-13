@@ -7,9 +7,78 @@ Fabric-native artifacts. Static local validation is the release gate. Semantic
 execution, refresh and deployment evidence remain `not_run` unless an
 authorized environment proves otherwise.
 
-## Current priorities — 2026-11-05
+## Current priorities — 2026-11-13
 
-Latest delivered UI baseline: commit `12e921e` on `main`, following the
+### Current worktree evidence — regression pass, corpus gate failed
+
+**Current local evidence (2026-11-13):** complete uninterrupted regression:
+**15,063 passed, 108 skipped, 1 xfailed**, across **15,172 collected tests**,
+with **6,128 passing subtests** reported separately and one expected
+duplicate-ZIP-name fixture warning, in **632.49 seconds**. This run supersedes
+the earlier interrupted and overlapping validation lots, including the
+corrected PBIP expected-metadata assertion. The full regression gate passes;
+the failed corpus gate below still prevents an overall release-green claim.
+
+Subsequent import-order cleanup and local typing clarifications passed **658
+affected-path tests**. Scoped Pyright comparison against `HEAD` retained **37
+existing errors and introduced no diagnostic signatures**; the type gate is
+not claimed clean. These checks are separate from the complete run above.
+
+**Current corpus gate: FAILED.** **30/44 migrated**, **15 projects without
+static openability blocking issues**, quality **12 FAIL / 10 WARN / 5 PASS**,
+**2 known limitations** and **36 reported breaches**. These are separate
+reported measures, not interchangeable denominators or native acceptance.
+Do not substitute the earlier 39/44 green campaign for this worktree result.
+
+### Bounded FIXED support — delivered locally
+
+Strict verified-exact proof is still attempted first, with its requirements
+unchanged. Otherwise, an explicit, consistent **SUM / AVG / MIN / MAX** shelf
+may produce a warned iterator only when every FIXED key resolves to the same
+physical table and the inner aggregate is a bounded direct-column aggregate.
+All FIXED keys are preserved. The warning identifies the inferred shelf and
+leaves source-filter scope and totals unverified; this is **approximated**, not
+exact parity. Bounded same-datasource, one-hop resolution is supported.
+Unsupported, conflicting, missing or merely inferred/default-SUM evidence
+retains a diagnostic `BLANK()` rather than a guessed formula.
+
+The local follow-up preserves worksheet-only `datasource_name` and deduplicates
+by datasource/raw name. Contradictory declarations within the same datasource
+are retained and diagnosed through transitive exact-raw-name consumers before
+constant, literal or FIXED optimizations; unrelated calculations remain intact.
+Static regression checks cover this feature. They do not prove native
+execution, value or source parity, refresh, saved state or deployment; those
+remain `not_run` without separate authorized evidence. Local delivery does not
+close the failed corpus gate or establish native acceptance.
+
+### Next increment — current-corpus correctness
+
+1. **Outcome:** reduce current corpus failures through correct generated
+  behavior while keeping `exact`, `healed`, `approximated` and `unsupported`
+  outcomes explicit.
+2. **Current evidence:** the failed corpus gate and completed regression above;
+  bounded FIXED static coverage is delivered, not a general semantic pass.
+3. **Smallest slice:** isolate one remaining row-grain DAX failure with its
+  current-corpus input and a failing regression, then correct the owning
+  conversion path. Follow with unproved FIXED, RLS and Hyper physical-identity
+  failures as separate evidence-backed slices, not a combined refactor.
+4. **Dependencies:** DAX / Wiring own grain and formula routing; Semantic owns
+  FIXED model context and RLS; Extractor / Semantic own Hyper identity;
+  Tester supplies focused regressions and Evidence / Reviewer recheck gates.
+5. **Validation:** run the smallest reproducing test with rejection controls,
+  then its owning module. Re-run the unchanged current-corpus gate and retain
+  complete uninterrupted regression coverage before claiming release green.
+  Documentation checks and links remain a separate validation step.
+6. **Risks and non-goals:** do not weaken verified-exact, security or complete
+  Hyper-binding safeguards, or add limitations merely to turn the gate green.
+  Static acceptance is not native execution, value/source parity or deployment.
+7. **Commit boundary:** keep each owning implementation and its public regression
+  together; record measured outcomes separately in documentation. Generated
+  artifacts are evidence only. No commit or push is part of this update.
+
+## Earlier priorities — 2026-11-05 (historical)
+
+Earlier delivered UI baseline: commit `12e921e` on `main`, following the
 engine/recovery work in `8cd63b2`. The local browser runner and PowerShell
 launcher are retained; the standalone desktop UI and Windows executable build
 have been removed. See the [local browser guide](LOCAL_WEB_UI.md).
@@ -255,7 +324,7 @@ authorized local workbook also passed copy/hash/absolute-path checks, static
 openability and native Desktop refresh. That private run is not a general
 refresh, saved/reopened-state or value/visual-parity certification.
 
-### Delivered in the latest fixes
+### Delivered in earlier fixes (historical)
 
 | Area | Delivered behavior | Evidence / boundary |
 |---|---|---|
@@ -438,10 +507,11 @@ Local validation on **2026-10-30**: **24 focused mapped-union tests passed**.
 The ordinary full public-corpus gate passed with **39/44 migrated**, the same
 **five known limitations**, **24 statically openable projects** and **zero
 unexcused blockers**. That run's Prep entry recorded a
-`SimpleJoin`/`SuperJoin` normalization conflict; the latest recheck below uses
+`SimpleJoin`/`SuperJoin` normalization conflict; the earlier recheck below uses
 updated signatures.
 
-The latest expanded targeted regression campaign passed **2,819 tests across
+**EARLIER / HISTORICAL green campaign, not the current worktree gate.**
+The earlier expanded targeted regression campaign passed **2,819 tests across
 35 files**, including the RenameColumn/SPLIT additions. The public-corpus gate
 passed against revised signatures for four of the same five existing
 limitations: **39/44 artifacts migrated**, **24 statically openable projects**,

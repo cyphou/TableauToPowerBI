@@ -9,6 +9,15 @@ and physical remote column remain separate identities. Undeclared datatypes
 are left absent, including three fields in the Custom SQL datasource. These
 records are not independently verified source schemas or evidence of real data.
 
+The inventories and coverage matrix below describe source features, not
+guaranteed equivalent conversions. FIXED uses exact proof first, otherwise a
+warned iterator only with an explicit, consistent SUM/AVG/MIN/MAX shelf, all
+physical keys resolved in one table and a bounded direct-column inner aggregate.
+Inferred/default SUM is not shelf evidence. Missing or conflicting evidence
+retains annotated `TODO`/`BLANK()`; products, conditional inner aggregates and
+nested LOD are outside that fallback. See the
+[FIXED policy](../../docs/TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions).
+
 ## 📁 Available Files
 
 ### 1. Superstore_Sales.twb
@@ -93,10 +102,10 @@ records are not independently verified source schemas or evidence of real data.
 **Content:**
 - ✅ 2 joined data sources (Orders + Customers) → manyToOne relationship
 - ✅ 22 advanced calculations:
-  - LOD expressions: `{FIXED}`, `{FIXED multi-dim}`, `{EXCLUDE}` → `CALCULATE` + `ALLEXCEPT` / `REMOVEFILTERS`
+  - LOD source cases: single-/multi-key FIXED (exact, warned approximation or diagnostic placeholder under the FIXED policy); EXCLUDE mapping requires context review
   - Iterator functions: `SUM(IF)` → `SUMX`, `AVG(IF)` → `AVERAGEX`
   - Window functions: `WINDOW_AVG`, `RUNNING_SUM`, `RANK`
-  - YTD calculation: `{FIXED : SUM(IF YEAR() = YEAR(TODAY()) ...)}` → nested `CALCULATE` + `SUMX`
+  - Current-year conditional FIXED source case: outside the bounded direct-column fallback; no guaranteed YTD conversion
   - Nested IF/ELSEIF (4 levels) → nested `IF()`
   - Null handling: `ISNULL` + `ZN` → `ISBLANK` + `IF(ISBLANK())`
   - String operations: `UPPER` + concatenation (`+` → `&`)
@@ -114,7 +123,7 @@ records are not independently verified source schemas or evidence of real data.
 - ✅ Geographic columns: City, State, Country, PostalCode, Latitude, Longitude → `dataCategory`
 - ✅ Cross-table references: Customers columns accessed from Orders context
 
-**Use case:** Full migration stress test — every supported feature in a single workbook
+**Use case:** Migration stress test across source features, including cases requiring manual review
 
 ---
 

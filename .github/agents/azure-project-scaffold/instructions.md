@@ -41,21 +41,21 @@ Requires approved plan. Before starting, verify:
 
 > **📁 Paths are examples, not assumptions.** Directories here (`services/web/`, `services/functions/`, `services/shared/`, `services/functions/src/utils/`, …) are **fresh-project defaults**. Follow existing workspace structure: inspect it, then map roles (frontend, Functions, shared types) to actual folders. Never impose a path. Plan Project Structure is authoritative when present. **If deployable apps use product names** (e.g. `services/office-compliance-api`, `services/office-compliance-portal`), preserve them in `workspaces`, `cd` commands, imports, and computed `main`/`rootDir` (`dist/<project>-api/src/functions/*.js`). Keep shared package generic (`services/shared`).
 
-0. **Frontend-first generation (load-bearing UX rule)** — For a frontend plan, launch **Frontend Sub-Agent** (Step 1) with backend track; frontend generation runs **concurrently** with backend Phase A/B. It generates and builds `services/web/` (mock data, pages, components), then reports. Planning already approved `.azure/.preview-temp/`; **do NOT request UX approval during scaffolding.** No frontend satisfies this rule. See [sub-agent-strategy.md](.github/agents/azure-project-scaffold/references/sub-agent-strategy.md).
+0. **Frontend-first generation (load-bearing UX rule)** — For a frontend plan, launch **Frontend Sub-Agent** (Step 1) with backend track; frontend generation runs **concurrently** with backend Phase A/B. It generates and builds `services/web/` (mock data, pages, components), then reports. Planning already approved `.azure/.preview-temp/`; **do NOT request UX approval during scaffolding.** No frontend satisfies this rule. See [sub-agent-strategy.md](references/sub-agent-strategy.md).
 1. **Plan is source of truth** — Read `.azure/project-plan.md` at start. Follow route definitions, service list, types, architecture exactly. Do NOT re-ask user for plan requirements.
 2. **Track progress** — Update status promptly: Approved → In Progress → Awaiting Integration. (`azure-project-integrate` advances to `Integrated`.)
 3. **Build-gate enforcement** — End each phase with build check (`tsc` / `npm run build`). Fix failures. **Do NOT proceed until code compiles.** Most important rule.
 4. **Azure Functions v4** — Always v4 programming model (Node.js v4, Python v2, .NET isolated). Prioritize Azure services. Runtimes: TypeScript, Python, C#.
-5. **API auth and Azure client boundaries** — Read `API Login` from plan. When `Yes`, scaffold user-facing frontend/API login behind small application auth interface. Separately put every Azure SDK client behind client-provider interface. Handlers/domain code NEVER import Azure SDKs, inspect environment, or choose implementations. See [service-abstraction.md](.github/agents/shared-references/service-abstraction.md).
-6. **Modular, one function per file** — One file per Function; one module per service. Put shared utilities in `services/functions/src/utils/`; no duplication or unused stubs. Prefix unused params with `_`. **DRY**: helper in 2+ files → extract to `services/functions/src/utils/` and import. **Proactive**: before handlers, identify patterns (password hashing, entity sanitization, response formatting) and create shared utils. See [architecture.md](.github/agents/shared-references/architecture.md).
-7. **Managed identity in production** — Every production backend-to-Azure client MUST use managed identity (`DefaultAzureCredential` or runtime equivalent) + resource endpoint. Select emulator-backed local client only when runtime environment is exactly `Development`. Every other value, including missing/misspelled, selects managed-identity client and fails startup on invalid endpoint config. Never use account keys, connection-string secrets, API keys, or local emulator as production fallback. Keep environment check in composition root. See [service-abstraction.md](.github/agents/shared-references/service-abstraction.md).
-8. **Input validation & standardized errors** — Every endpoint has validation schema (Zod/Pydantic/FluentValidation). Every route returns `{ error: { code, message, details? } }`. Error codes typed union, not strings. See [error-handling.md](.github/agents/shared-references/error-handling.md).
-9. **Resilience classification** — Follow Essential/Enhancement classification. Wrap Enhancement services in try/catch with fallback. **Enhancement constructors MUST NOT throw** — defer config validation to methods or catch in registry. Constructor throws crash ALL handlers via `getServices()`. See [resilience.md](.github/agents/shared-references/resilience.md).
-10. **Database write integrity** — Multi-table writes MUST use `database.transaction()`. Document collection-to-table mapping for integrate-agent migrations. Integrate owns schema migrations and seed data; scaffold creates neither. See [database-integrity.md](.github/agents/shared-references/database-integrity.md).
-11. **Auto-initialization** — Registry `getServices()` MUST auto-initialize with concrete implementations when nothing pre-registered. (The integrate agent's runtime smoke test confirms this — but the code must be correct here.) See [service-abstraction.md](.github/agents/shared-references/service-abstraction.md).
-12. **Cross-workspace build safety** — When Functions imports `../shared/`, set `rootDir` to `".."`; **derive `main` from actual `dist/` output after `tsc`**, never hardcode. With `rootDir: ".."`, handlers compile to `dist/functions/src/functions/X.js`. List `dist/` after build and verify `main`. This prevents "build passes but app won't start". See [architecture.md](.github/agents/shared-references/architecture.md).
-13. **Deploy-ready artifact (dependency split)** — Deploy **compiled `dist/`**, not TS source. Server installs **production deps only** (`npm install --omit=dev`) without rebuilding. Runtime imports MUST be in `dependencies`; build tools (`typescript`, `@types/*`, test runners, bundlers) in `devDependencies`; `--omit=dev` must satisfy every `import` in `dist/`. `dist/` never imports `src/` or requires rebuild. Native addons (`bcrypt`, `sharp`, `better-sqlite3`, Prisma engines) remain in `dependencies`, installed on Linux, not bundled locally. Thus deploy ships prebuilt artifact with platform build **disabled**, avoiding Oryx rebuild without devDependencies/`tsc`. **Monorepo:** keep services self-contained — import `shared` via **relative paths** so `tsc` compiles it into service `dist/`; resolve hoisted third-party deps via service-level production install. Single-file bundling (esbuild `--packages=external`) is optional, not default. See [typescript.md](.github/agents/shared-references/runtimes/typescript.md) → Deployment build contract.
-14. **Frontend quality contract** — For frontends, plan **Section 5 (Design System & UI) is load-bearing**. Treat Pages-table region tokens (`header`, `hero`, `grid`, `form`, ...) as layout **intent**, rendered with real `Component Library:` primitives and Color Palette theme. **Reproduce Section 5 Sample Content records**: same entities, names, values, and states as planning preview. Seed mocks from Sample Content, then extend. **Never use raw `<div className="card">` wireframe placeholders**; bespoke domain components (polaroid frames, ticket stubs, gallery tiles, chat bubbles) wrapping real primitives with content + imagery are welcome. **Each media entity MUST render a real mock image, never empty tint or solid color.** Faithfully reproduce presentation-quality `.azure/.preview-temp/*.html` with real primitives plus production polish (real photos, motion, dark mode, webfont, library elevation); never regress. If less polished than static preview (flat surfaces, missing icons/motion/dark mode/polished hero/elevation), apply Polish floor before completion. See [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md) for mappings, theming, icons, states, **Polish floor**, and **Polish self-review checklist**. Missing Section 5 or blank `Component Library:` → STOP until plan completed.
+5. **API auth and Azure client boundaries** — Read `API Login` from plan. When `Yes`, scaffold user-facing frontend/API login behind small application auth interface. Separately put every Azure SDK client behind client-provider interface. Handlers/domain code NEVER import Azure SDKs, inspect environment, or choose implementations. See [service-abstraction.md](../shared-references/service-abstraction.md).
+6. **Modular, one function per file** — One file per Function; one module per service. Put shared utilities in `services/functions/src/utils/`; no duplication or unused stubs. Prefix unused params with `_`. **DRY**: helper in 2+ files → extract to `services/functions/src/utils/` and import. **Proactive**: before handlers, identify patterns (password hashing, entity sanitization, response formatting) and create shared utils. See [architecture.md](../shared-references/architecture.md).
+7. **Managed identity in production** — Every production backend-to-Azure client MUST use managed identity (`DefaultAzureCredential` or runtime equivalent) + resource endpoint. Select emulator-backed local client only when runtime environment is exactly `Development`. Every other value, including missing/misspelled, selects managed-identity client and fails startup on invalid endpoint config. Never use account keys, connection-string secrets, API keys, or local emulator as production fallback. Keep environment check in composition root. See [service-abstraction.md](../shared-references/service-abstraction.md).
+8. **Input validation & standardized errors** — Every endpoint has validation schema (Zod/Pydantic/FluentValidation). Every route returns `{ error: { code, message, details? } }`. Error codes typed union, not strings. See [error-handling.md](../shared-references/error-handling.md).
+9. **Resilience classification** — Follow Essential/Enhancement classification. Wrap Enhancement services in try/catch with fallback. **Enhancement constructors MUST NOT throw** — defer config validation to methods or catch in registry. Constructor throws crash ALL handlers via `getServices()`. See [resilience.md](../shared-references/resilience.md).
+10. **Database write integrity** — Multi-table writes MUST use `database.transaction()`. Document collection-to-table mapping for integrate-agent migrations. Integrate owns schema migrations and seed data; scaffold creates neither. See [database-integrity.md](../shared-references/database-integrity.md).
+11. **Auto-initialization** — Registry `getServices()` MUST auto-initialize with concrete implementations when nothing pre-registered. (The integrate agent's runtime smoke test confirms this — but the code must be correct here.) See [service-abstraction.md](../shared-references/service-abstraction.md).
+12. **Cross-workspace build safety** — When Functions imports `../shared/`, set `rootDir` to `".."`; **derive `main` from actual `dist/` output after `tsc`**, never hardcode. With `rootDir: ".."`, handlers compile to `dist/functions/src/functions/X.js`. List `dist/` after build and verify `main`. This prevents "build passes but app won't start". See [architecture.md](../shared-references/architecture.md).
+13. **Deploy-ready artifact (dependency split)** — Deploy **compiled `dist/`**, not TS source. Server installs **production deps only** (`npm install --omit=dev`) without rebuilding. Runtime imports MUST be in `dependencies`; build tools (`typescript`, `@types/*`, test runners, bundlers) in `devDependencies`; `--omit=dev` must satisfy every `import` in `dist/`. `dist/` never imports `src/` or requires rebuild. Native addons (`bcrypt`, `sharp`, `better-sqlite3`, Prisma engines) remain in `dependencies`, installed on Linux, not bundled locally. Thus deploy ships prebuilt artifact with platform build **disabled**, avoiding Oryx rebuild without devDependencies/`tsc`. **Monorepo:** keep services self-contained — import `shared` via **relative paths** so `tsc` compiles it into service `dist/`; resolve hoisted third-party deps via service-level production install. Single-file bundling (esbuild `--packages=external`) is optional, not default. See [typescript.md](../shared-references/runtimes/typescript.md) → Deployment build contract.
+14. **Frontend quality contract** — For frontends, plan **Section 5 (Design System & UI) is load-bearing**. Treat Pages-table region tokens (`header`, `hero`, `grid`, `form`, ...) as layout **intent**, rendered with real `Component Library:` primitives and Color Palette theme. **Reproduce Section 5 Sample Content records**: same entities, names, values, and states as planning preview. Seed mocks from Sample Content, then extend. **Never use raw `<div className="card">` wireframe placeholders**; bespoke domain components (polaroid frames, ticket stubs, gallery tiles, chat bubbles) wrapping real primitives with content + imagery are welcome. **Each media entity MUST render a real mock image, never empty tint or solid color.** Faithfully reproduce presentation-quality `.azure/.preview-temp/*.html` with real primitives plus production polish (real photos, motion, dark mode, webfont, library elevation); never regress. If less polished than static preview (flat surfaces, missing icons/motion/dark mode/polished hero/elevation), apply Polish floor before completion. See [frontend-quality-bar.md](references/frontend-quality-bar.md) for mappings, theming, icons, states, **Polish floor**, and **Polish self-review checklist**. Missing Section 5 or blank `Component Library:` → STOP until plan completed.
 
 ---
 
@@ -158,31 +158,31 @@ Rewrite nonportable commands using these patterns.
 
 > **Skip** if plan has no frontend ("API only" or "Background worker").
 
-> **Run as a sub-agent (parallel with backend).** The orchestrator delegates frontend generation (sub-steps **F1–F4**) to a dedicated **Frontend Sub-Agent** so it runs concurrently with backend Phase A/B. The sub-agent generates + builds `services/web/` and returns a single report. See [sub-agent-strategy.md](.github/agents/azure-project-scaffold/references/sub-agent-strategy.md) for the sub-agent brief and hand-back contract.
+> **Run as a sub-agent (parallel with backend).** The orchestrator delegates frontend generation (sub-steps **F1–F4**) to a dedicated **Frontend Sub-Agent** so it runs concurrently with backend Phase A/B. The sub-agent generates + builds `services/web/` and returns a single report. See [sub-agent-strategy.md](references/sub-agent-strategy.md) for the sub-agent brief and hand-back contract.
 
 **Goal**: Standalone frontend with mock data, generated and built. The integrate agent later wires it to the real backend. When `API Login` is `Yes`, include the login UI and auth state, but seed local identity so the preview lands on the main view (dashboard, feed), NOT the login page.
 
 > ⚠️ **WORKING DIRECTORY (most-common scaffold failure)**: Every frontend command — `npm install`, `npx vite build`, `npm run build` — MUST run against the **frontend folder** (typically `services/web/`), never the workspace root. **Prefer the working-directory-independent form `npm --prefix services/web run <script>`** — `--prefix` loads the frontend's `package.json` no matter where the shell starts, so it can't accidentally run from the root. When using a binary directly (e.g. `npx vite build`), pass `cwd: "services/web"` on the same terminal call.
 
 **References**:
-- [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md) for the per-library region-token → primitive mapping, theming contract, icon contract, and state-coverage contract. **READ THIS FIRST — it is the contract between the plan's Section 6 and the JSX you ship.**
-- [frontend-patterns.md](.github/agents/shared-references/frontend-patterns.md) for patterns and quality bar.
-- [frontend-preview-steps.md](.github/agents/azure-project-scaffold/references/frontend-preview-steps.md) for sub-steps (F1–F4), working directory rules, approval loop.
+- [frontend-quality-bar.md](references/frontend-quality-bar.md) for the per-library region-token → primitive mapping, theming contract, icon contract, and state-coverage contract. **READ THIS FIRST — it is the contract between the plan's Section 6 and the JSX you ship.**
+- [frontend-patterns.md](../shared-references/frontend-patterns.md) for patterns and quality bar.
+- [frontend-preview-steps.md](references/frontend-preview-steps.md) for sub-steps (F1–F4), working directory rules, approval loop.
 
 > **✅ Checkpoint**:
 > 1. Frontend builds zero errors (`npm --prefix services/web run build` — cwd-independent; **never** a bare `npx vite build` from the workspace root)
 > 2. No `any` types in `.ts`/`.tsx`
 > 3. When `API Login` is `Yes`, local identity state is seeded so the app lands on main content on first load, with the signed-in user read from the seam (`api.getCurrentUser()`), not imported from `src/mocks/`
-> 4. **API seam intact** — `src/api/` declares an `ApiClient` interface (never `type ApiClient = typeof mockClient`), the mock is declared as `ApiClient`, `src/api/index.ts` is the one-line swap point, and **no file outside `src/api/` imports `src/mocks/` or `mockClient`**. Reference data with no plan route (assignee names, the signed-in user) gets an `ApiClient` method backed by the mock — it is never imported directly. See [frontend-preview-steps.md](.github/agents/azure-project-scaffold/references/frontend-preview-steps.md) → Load-bearing seam rule.
+> 4. **API seam intact** — `src/api/` declares an `ApiClient` interface (never `type ApiClient = typeof mockClient`), the mock is declared as `ApiClient`, `src/api/index.ts` is the one-line swap point, and **no file outside `src/api/` imports `src/mocks/` or `mockClient`**. Reference data with no plan route (assignee names, the signed-in user) gets an `ApiClient` method backed by the mock — it is never imported directly. See [frontend-preview-steps.md](references/frontend-preview-steps.md) → Load-bearing seam rule.
 > 5. **No UX approval prompt** — the design was already approved during planning via `.azure/.preview-temp/`. Do NOT call `ask_user` for "do you approve this UI?".
-> 6. **Preview-embeddable dev server** — `vite.config`'s `server` sets `host: true`, `allowedHosts: true`, `strictPort: false` (Angular: `--host 0.0.0.0 --disable-host-check`; Next.js: `-H 0.0.0.0`); the `dev`/`start` script serves and prints a `http://localhost:<port>/` URL (never `build --watch`); no `X-Frame-Options`/`frame-ancestors` meta CSP in `index.html`; and you did NOT start your own dev server or an auto-start dev task. The `open_frontend_preview_view` tool starts and owns the dev server for the **Approve UI** preview — these keep its webview iframe from hanging or rendering blank (which would leave the user unable to approve). See [frontend-preview-steps.md](.github/agents/azure-project-scaffold/references/frontend-preview-steps.md) → Preview compatibility.
-> 7. **Quality bar (Rule 13)**: Every page imports primitives from the library named in plan Section 5's `Component Library:`; the app shell is wrapped in that library's theme provider with a brand ramp derived from Section 5's palette; every icon is a real library icon (no emoji, no SVG placeholders); every `form` region has a visible validation state; every data-bearing page exposes all four states (loading / error / empty / data) via a dev-only toggle. **Use the approved HTML mock-up at `.azure/.preview-temp/<slug>.html` as the layout/visual reference per page** — reproduce the same regions and tonal feel using the real library primitives, not by embedding the HTML. See [frontend-quality-bar.md](.github/agents/azure-project-scaffold/references/frontend-quality-bar.md).
+> 6. **Preview-embeddable dev server** — `vite.config`'s `server` sets `host: true`, `allowedHosts: true`, `strictPort: false` (Angular: `--host 0.0.0.0 --disable-host-check`; Next.js: `-H 0.0.0.0`); the `dev`/`start` script serves and prints a `http://localhost:<port>/` URL (never `build --watch`); no `X-Frame-Options`/`frame-ancestors` meta CSP in `index.html`; and you did NOT start your own dev server or an auto-start dev task. The `open_frontend_preview_view` tool starts and owns the dev server for the **Approve UI** preview — these keep its webview iframe from hanging or rendering blank (which would leave the user unable to approve). See [frontend-preview-steps.md](references/frontend-preview-steps.md) → Preview compatibility.
+> 7. **Quality bar (Rule 13)**: Every page imports primitives from the library named in plan Section 5's `Component Library:`; the app shell is wrapped in that library's theme provider with a brand ramp derived from Section 5's palette; every icon is a real library icon (no emoji, no SVG placeholders); every `form` region has a visible validation state; every data-bearing page exposes all four states (loading / error / empty / data) via a dev-only toggle. **Use the approved HTML mock-up at `.azure/.preview-temp/<slug>.html` as the layout/visual reference per page** — reproduce the same regions and tonal feel using the real library primitives, not by embedding the HTML. See [frontend-quality-bar.md](references/frontend-quality-bar.md).
 
 ---
 
 ### Sub-Agent Strategy for Backend Scaffolding
 
-**Reference**: Read [sub-agent-strategy.md](.github/agents/azure-project-scaffold/references/sub-agent-strategy.md) for execution model, Frontend/Phase A/Phase B details, coordination rules.
+**Reference**: Read [sub-agent-strategy.md](references/sub-agent-strategy.md) for execution model, Frontend/Phase A/Phase B details, coordination rules.
 
 > Sub-agents parallelize work. The **Frontend sub-agent** (Step 1, F1–F4) and the backend track launch together right after Step 0. Phase A (Contracts) is sequential/blocking; Phase B (Backend) launches when Phase A completes. The Frontend sub-agent runs concurrently with both.
 
@@ -199,7 +199,7 @@ Rewrite nonportable commands using these patterns.
 | Create `.gitignore` | Runtime-appropriate ignores (node_modules, data/, etc.). **Write it before any file that holds credentials** — `.env` and `local.settings.json` must be ignored from the first commit, never added and removed later. See architecture.md § .gitignore Additions |
 | Create directory structure | `services/functions/`, `services/functions/src/utils/`, `services/shared/` (do NOT create `services/web/` — may exist from frontend generation) |
 
-**Reference**: [architecture.md](.github/agents/shared-references/architecture.md)
+**Reference**: [architecture.md](../shared-references/architecture.md)
 
 > **✅ Checkpoint**:
 > 1. **Build gate**: `npm run build` / `python -m py_compile` / `dotnet build`. Zero errors.
@@ -253,7 +253,7 @@ Rewrite nonportable commands using these patterns.
 | Implement env validation | Validate the variables required by the selected providers at startup. Missing or unknown environment means production, so missing production configuration fails fast. |
 | Keep selection centralized | Read the environment once in the startup composition root. Application code receives interfaces and contains no environment checks. |
 
-**Reference**: [service-abstraction.md](.github/agents/shared-references/service-abstraction.md)
+**Reference**: [service-abstraction.md](../shared-references/service-abstraction.md)
 
 > **✅ Checkpoint**: Config module loads env vars. `.env.example` documents all variables.
 
@@ -294,7 +294,7 @@ Managed identity is not an end-user login mechanism. Never use a managed identit
 | Create service registry | `getServices()` MUST auto-initialize selected clients when nothing was pre-registered. ESM uses static imports or `await import()`, NOT `require()`. Enhancement construction follows Rule 9 without substituting a local provider. |
 | Leave breadcrumbs | Use explicit names such as `AzuriteBlobClientProvider` and `ManagedIdentityBlobClientProvider`. Keep the interface, both implementations, and factory together; document settings in `.env.example`; set the development marker in `local.settings.json`. |
 
-**Reference**: [service-abstraction.md](.github/agents/shared-references/service-abstraction.md)
+**Reference**: [service-abstraction.md](../shared-references/service-abstraction.md)
 
 > **📋 File Verification** — Before checkpoint, verify on disk:
 >
@@ -335,7 +335,7 @@ Managed identity is not an end-user login mechanism. Never use a managed identit
 | Define error code enum | Typed union of all valid error codes (not plain `string`) |
 | Wire validation into handlers | Validate request body/params before processing |
 
-**Reference**: [error-handling.md](.github/agents/shared-references/error-handling.md)
+**Reference**: [error-handling.md](../shared-references/error-handling.md)
 
 > ⚠️ **Schema Completeness Check** (MANDATORY)
 >
@@ -365,14 +365,14 @@ For **each** route in plan:
 |------|---------|
 | Create function handler | One file per function. **All async calls MUST include `await`**. **`handleError` calls MUST match standardized signature**. |
 | Use transactions for multi-table writes | Any handler writing 2+ tables MUST use `database.transaction()` |
-| Wrap Enhancement services | External services classified Enhancement MUST have try/catch with fallback (see [resilience.md](.github/agents/shared-references/resilience.md)) |
+| Wrap Enhancement services | External services classified Enhancement MUST have try/catch with fallback (see [resilience.md](../shared-references/resilience.md)) |
 | Validate file uploads server-side | Check file size and MIME type before processing |
 | Validate path params before DB queries | When the auth service supplies a user ID, **validate its format** (e.g., UUID) before a DB query. A malformed ID on a typed column causes 500 instead of 401. |
 | Verify response shape | `jsonBody` must match Route Definitions |
 | Verify collection names | Must map to the documented collection-to-table mapping (Rule 10) |
 | Extract shared utilities | Duplicated helpers → `services/functions/src/utils/` (Rule 6). **After each handler**, grep for helpers in 2+ files, extract immediately. Consider handler wrapper if >8 handlers share try/catch boilerplate. Prefix unused params with `_`. |
 
-**Reference**: [service-abstraction.md](.github/agents/shared-references/service-abstraction.md), [resilience.md](.github/agents/shared-references/resilience.md)
+**Reference**: [service-abstraction.md](../shared-references/service-abstraction.md), [resilience.md](../shared-references/resilience.md)
 
 > **✅ Checkpoint (per feature)**: Handler compiles. Response shape matches plan contract.
 
@@ -395,7 +395,7 @@ For **each** route in plan:
 | Create error middleware | Catches errors, maps to standardized response |
 | Create error response shape | `{ error: { code: string, message: string, details?: any } }` |
 
-**Reference**: [error-handling.md](.github/agents/shared-references/error-handling.md)
+**Reference**: [error-handling.md](../shared-references/error-handling.md)
 
 > **✅ Checkpoint**: Error types and middleware exist. Response shape consistent. `tsc` zero errors.
 
@@ -448,7 +448,7 @@ For **each** route in plan:
 | Add request logging | Log method, path, status, duration per request |
 | Add operation logging | Log key operations (create, update, delete) |
 
-**Reference**: [runtimes/](.github/agents/shared-references/runtimes//)
+**Reference**: [runtimes/](../shared-references/runtimes/)
 
 > **✅ Checkpoint**: Logger configured, wired into handlers. Request logging in place. `tsc` zero errors.
 
@@ -506,7 +506,7 @@ For **each** route in plan:
 | Python | docker-compose | `func init --python --model V2` | Functions v2 | pip / poetry |
 | C# (.NET) | docker-compose | `func init --dotnet --isolated` | Functions isolated worker | dotnet |
 
-For runtime-specific implementation patterns, see [runtimes/](.github/agents/shared-references/runtimes//).
+For runtime-specific implementation patterns, see [runtimes/](../shared-references/runtimes/).
 
 ---
 

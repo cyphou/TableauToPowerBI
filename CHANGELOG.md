@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+- Align conversion references, sample descriptions and architecture documentation
+  with bounded FIXED shelf approximations and datasource-scoped calculation
+  conflict handling; distinguish manual examples from generator guarantees.
+- Preserve conflicting calculation declarations within each datasource and emit
+  diagnostic TODO/BLANK placeholders for affected calculations and their
+  transitive exact-raw-reference consumers, without discarding unrelated valid
+  calculations or resolving conflicts through constant/FIXED optimizations.
+- Preserve calculation IDs independently across datasources and scope
+  multireference dependency validation to proven datasource consumer identities;
+  ambiguous bindings remain diagnostic.
+- Preserve explicit parent datasource identity for worksheet-only calculations,
+  preventing valid aggregates from becoming unresolved-source diagnostic BLANKs.
+- Preserve editable FIXED DAX with an annotated iterator when explicit,
+  consistent SUM/AVG/MIN/MAX shelf evidence and single-table physical keys are
+  resolved. Retain all FIXED keys and disclose unverified source filters and
+  totals. Keep the exact proof path unchanged; missing/ambiguous evidence and
+  inferred visual SUM defaults retain diagnostic BLANK. Resolve bounded
+  same-datasource one-hop FIXED references without substituting foreign keys.
 - Extend static Power Query validation to multiline shared M expressions in
   `expressions.tmdl`; keep inline parameter declarations out of query parsing.
 - Preserve the previous `datasources.json` when extraction export serialization

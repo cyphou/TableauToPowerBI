@@ -46,7 +46,7 @@ You are the **DAX** agent for the Tableau to Power BI migration project. You are
 | Date | DATETRUNC→STARTOF*, DATEPART→YEAR/MONTH/DAY, DATEDIFF, DATEADD |
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP |
 | Stats | MEDIAN, STDEV→STDEV.S, PERCENTILE→PERCENTILE.INC, CORR→CORREL |
-| LOD | Illustrative {FIXED}→CALCULATE(ALLEXCEPT), {INCLUDE}→CALCULATE, {EXCLUDE}→REMOVEFILTERS; unproved FIXED scope can emit TODO/BLANK |
+| LOD | FIXED uses exact verified scopes or shelf-derived annotated iterators over physical keys; unknown/ambiguous shelf evidence or physical bindings retain TODO/BLANK. INCLUDE→CALCULATE, EXCLUDE→REMOVEFILTERS |
 | Table Calc | RUNNING_SUM→CALCULATE(SUM), RANK→RANKX(ALL()), WINDOW_*→CALCULATE |
 | Iterator | SUM(IF(...))→SUMX, AVG(IF(...))→AVERAGEX |
 | Security | USERNAME()→USERPRINCIPALNAME(), ISMEMBEROF→RLS role |
@@ -71,7 +71,23 @@ convert_tableau_formula_to_dax(formula, column_name, table_name, calc_map, param
 ### 2. SUM-of-Measure Unwrapping
 - `SUM([MeasureName])` is invalid — SUM only accepts column refs. Removing the
   outer aggregation can change the source shelf and total; emit a diagnostic
-  unless equivalence has been proven.
+  unless equivalence has been proven. For the bounded FIXED path below, retain
+  the shelf through an annotated iterator instead of discarding it.
+
+### FIXED Exactness And Recoverability
+- Proven equivalence emits exact DAX without an approximation warning; preserve
+  every requirement of the existing verified-scope compiler.
+- Otherwise, use explicit worksheet aggregation evidence, scoped by datasource
+  and calculation identity. Consistent SUM/AVG/MIN/MAX usage can emit
+  SUMX/AVERAGEX/MINX/MAXX over VALUES(one key) or SUMMARIZE(all FIXED keys).
+  Current support requires physical keys and a direct physical-column aggregate
+  in one table; do not claim support for arbitrary FIXED formulas.
+- Annotate the inferred shelf and the unverified source filter scope and totals.
+  Keep the warning in the TMDL expression and MigrationNote; syntax validation
+  does not establish semantic equivalence, Desktop loading or value parity.
+- Missing, unsupported or conflicting shelf usage retains diagnostic BLANK().
+  Never invent SUM, choose one of divergent worksheet usages, or treat a shelf
+  prefix as a complete semantic attestation. Inferred/default SUM is not evidence.
 
 ### 3. Cross-Table References
 - **manyToOne** relationships → use `RELATED('LookupTable'[Column])`

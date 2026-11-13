@@ -19,7 +19,7 @@ Display the architecture plan for user approval BEFORE generating any files:
 >
 > Example: `record_deploy_prerequisites({ tools: [{ id: "azd", installed: true, version: "1.9.2" }, { id: "az", installed: false }] })`
 >
-> Checking the CLIs by hand and describing the result in chat does **not** satisfy this — the user's plan view stays empty. Never write these into `prepare-plan.json`; that is the vendored pipeline's artifact. If the tool is not directly listed, load it first per "Azure Resources MCP Tools" in [`azure-deploy.agent.md`](../../azure-deploy.agent.md) — do **not** conclude it is unavailable.
+> Checking the CLIs by hand and describing the result in chat does **not** satisfy this — the user's plan view stays empty. Never write these into `prepare-plan.json`; that is the vendored pipeline's artifact. If the tool is not directly listed, load it first per "Azure Resources MCP Tools" in `azure-deploy.agent.md` (agent definition not included locally) — do **not** conclude it is unavailable.
 
 > ⛔ **Resource group edit is MANDATORY in the gate display.** Show this exact block:
 > ```

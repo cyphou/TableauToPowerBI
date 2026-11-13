@@ -5,7 +5,7 @@
 
 > **🎨 PRESENTATION-QUALITY visual spec for stakeholder design sign-off.**
 >
-> **raw-HTML/CSS rendering** of [`frontend-quality-bar.md`](.github/agents/shared-references/frontend-quality-bar.md) → "Shared design-quality principles". Read it first. Preview and eventual scaffolded app must look like the **same professional product** at two fidelities. Not a wireframe: flat, gray, boxy results fail even when technically correct.
+> **raw-HTML/CSS rendering** of [`frontend-quality-bar.md`](../../shared-references/frontend-quality-bar.md) → "Shared design-quality principles". Read it first. Preview and eventual scaffolded app must look like the **same professional product** at two fidelities. Not a wireframe: flat, gray, boxy results fail even when technically correct.
 >
 > Must confirm at polished quality:
 >

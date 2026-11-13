@@ -48,6 +48,26 @@
 
 ### Verification evidence
 
+Current local follow-up (2026-11-13, Windows, Python 3.14.2):
+
+- Complete uninterrupted regression: **15,063 passed, 108 skipped, 1 xfailed**
+  across **15,172 collected tests**, with **6,128 passing subtests** reported
+  separately, in **632.49 seconds**. One expected duplicate-ZIP-name fixture
+  warning remains. This run supersedes the earlier interrupted and overlapping
+  validation lots, including the corrected PBIP expected-evidence assertion.
+- Subsequent import-order cleanup and local typing clarifications passed **658
+  affected-path tests**. Scoped Pyright comparison found **37 existing errors
+  at HEAD and 37 after the changes, with no introduced diagnostic signatures**;
+  this is not a clean repository-wide type gate.
+- **Corpus gate FAILED**: **30/44 artifacts migrated**, **15 projects without
+  blocking static-openability issues**, **12 FAIL / 10 WARN / 5 PASS** quality
+  verdicts, two known limitations and 36 reported gate breaches. A diagnostic
+  project or static check is not successful native opening or value parity.
+- This follow-up covers bounded, annotated FIXED shelf approximations and
+  datasource-scoped calculation identity/conflict handling. Native Desktop,
+  refresh, semantic execution, value parity and deployment are **not_run** for
+  these changes. The dated results below remain historical, scoped evidence.
+
 Scoped Desktop publication checks (2026-10-31, Windows, Python 3.14.2):
 
 - **910 tests passed across 14 affected test files**; this is a focused
@@ -171,7 +191,8 @@ python migrate.py batch .\workbooks --output-dir .\output --compare-desktop --al
 > evidence remain separate; see the [one-command workflow](docs/DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command).
 
 Generated PBIR reports, including thin reports, end with a **Migration Summary**
-page showing migration counts and the static project-check result. This page is
+page showing migration counts, available lineage-contract status/counts, and
+static project-check findings. This page is
 a generation-time snapshot, not proof of Service refresh or Tableau-to-Power BI
 parity. See the [summary page guide](docs/POWERBI_PROJECT_GUIDE.md#migration-summary-page)
 for its scope and limitations.
@@ -956,7 +977,7 @@ SharedSales/
 | Syntax | `==` | `=` |
 | Syntax | `or` / `and` | `\|\|` / `&&` |
 | Syntax | `+` (strings) | `&` |
-| LOD | `{FIXED [dim] : AGG}` | `CALCULATE(AGG, ALLEXCEPT)` |
+| LOD | `{FIXED [dim] : AGG}` | Exact DAX with proven scope; otherwise a bounded, warned shelf iterator or diagnostic `TODO`/`BLANK()` |
 | LOD | `{INCLUDE [dim] : AGG}` | `CALCULATE(AGG)` |
 | LOD | `{EXCLUDE [dim] : AGG}` | `CALCULATE(AGG, REMOVEFILTERS)` |
 | Table Calc | `RUNNING_SUM / AVG / COUNT` | `CALCULATE(SUM/AVERAGE/COUNT)` |
@@ -975,23 +996,22 @@ SharedSales/
 
 ### Highlights
 
+FIXED first uses the unchanged exact-proof path. Without that proof, an
+explicit, consistent SUM/AVG/MIN/MAX shelf can select an iterator over **all**
+resolved physical FIXED keys in one table, for a bounded direct-column inner
+aggregate. For example, `{FIXED [customer] : SUM([revenue])}` on an explicit
+SUM shelf can produce this illustrative approximation:
+
+```dax
+SUMX(VALUES('Orders'[customer]), CALCULATE(SUM('Orders'[revenue])))
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Tableau LOD                    →  Power BI DAX                        │
-├─────────────────────────────────────────────────────────────────────────┤
-│  {FIXED [customer] : SUM([qty] * [price])}                             │
-│  → CALCULATE(SUM('T'[qty] * 'T'[price]), ALLEXCEPT('T', 'T'[customer]))│
-│                                                                         │
-│  {EXCLUDE [channel] : SUM([revenue])}                                   │
-│  → CALCULATE(SUM([revenue]), REMOVEFILTERS('T'[channel]))               │
-│                                                                         │
-│  SUM(IF [status] != "X" THEN [qty] * [price] ELSE 0 END)               │
-│  → SUMX('Orders', IF('Orders'[status] != "X", [qty] * [price], 0))     │
-│                                                                         │
-│  RANK(SUM([revenue]))                                                   │
-│  → RANKX(ALL(SUM('Table'[revenue])))                                    │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+
+Generated approximations carry a warning naming the inferred shelf and the
+unverified source filters and totals. An inferred/default SUM is not shelf
+evidence. Missing or conflicting evidence retains annotated `TODO`/`BLANK()`.
+Bounded same-datasource one-hop references are supported; arbitrary products,
+conditional inner aggregates and nested LOD are not covered by this fallback.
+See the [FIXED policy](docs/TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions).
 
 ---
 

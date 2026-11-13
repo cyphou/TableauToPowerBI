@@ -573,4 +573,4 @@ describe('useAuth', () => {
 
 ### Reference
 
-See [frontend-patterns.md](.github/agents/shared-references/frontend-patterns.md) for full frontend architecture guidance.
+See [frontend-patterns.md](../../shared-references/frontend-patterns.md) for full frontend architecture guidance.

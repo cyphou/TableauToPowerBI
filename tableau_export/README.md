@@ -11,6 +11,19 @@ the extraction entry point below is for development and diagnosis.
 Extraction orchestrator. Safely parses Tableau XML, reads packaged workbooks
 and coordinates datasource, worksheet, dashboard and other extractors.
 
+Worksheet-only calculations retain their parent `datasource_name`. Calculation
+identity is datasource plus raw name: identical declarations collapse, while
+contradictory declarations within the same datasource retain alternatives under
+`_source_declaration_conflicts` in both calculation and datasource exports.
+Generation keeps affected calculations and transitive exact-raw-reference
+consumers diagnostic before literal, constant-one or FIXED optimizations;
+unrelated valid calculations remain available. Missing ownership is not assigned
+by first match, and equal raw names across datasources remain independent.
+
+Worksheet fields retain `aggregation_candidates` and `aggregation_evidence`.
+An inferred/default SUM used for rendering is not explicit source shelf evidence.
+See the [bounded FIXED policy](../docs/FAQ.md#how-are-lod-expressions-converted).
+
 ```bash
 python tableau_export/extract_tableau_data.py your_workbook.twbx
 ```

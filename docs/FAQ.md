@@ -493,7 +493,8 @@ Some Tableau functions have no direct DAX equivalent:
 - Table functions (`SIZE()` → `COUNTROWS(ALLSELECTED())`, `INDEX()` → `RANKX()`) — approximated, may need adjustment
 
 Most complex patterns **are** handled automatically:
-- LOD expressions (`{ FIXED ... }`) → `CALCULATE` + `ALLEXCEPT` / `REMOVEFILTERS` / `ALL`
+- FIXED LOD expressions use exact verified DAX, shelf-derived annotated
+   iterators, or diagnostic `BLANK()` when evidence is missing or ambiguous.
 - `SUM(IF ...)` → `SUMX('table', IF(...))` iterator conversion
 - Nested `IF/ELSEIF/ELSE/END` → nested `IF()` calls
 - Window functions (`WINDOW_AVG`, `WINDOW_SUM`) → `CALCULATE(..., ALL('table'))`
@@ -502,22 +503,32 @@ Most complex patterns **are** handled automatically:
 ### How are LOD expressions converted?
 
 LOD (Level of Detail) expressions are one of the most complex Tableau features.
-The tool converts supported patterns automatically; source filter order,
-relationship grain and undefined ratios still require source-value and runtime checks:
+For FIXED, the default migration uses three levels:
 
+1. A supported complete equivalence proof produces exact DAX without an
+   approximation warning; proof requirements are not relaxed.
+2. Explicit, consistent SUM/AVG/MIN/MAX shelf usage and resolved single-table
+   physical keys can produce an annotated iterator. All FIXED keys are retained;
+   source filter scope and totals remain explicitly unverified.
+3. Missing, inferred, conflicting or unsupported evidence retains annotated
+   `BLANK()` rather than inventing an aggregation or substituting a field.
+
+For example, `{FIXED [Sector] : MIN([Homes])}` consumed on a `sum:` shelf can
+produce the following editable approximation, not an exactness claim:
+
+```dax
+/* shelf (sum:) approximation; source filter scope and totals unverified */
+SUMX(VALUES('Housing'[Sector]), CALCULATE(MIN('Housing'[Homes])))
 ```
-{FIXED [Region] : SUM([Sales])}
-→ CALCULATE(SUM('Table'[Sales]), ALLEXCEPT('Table', 'Table'[Region]))
 
-{FIXED [Region], [Category] : SUM([Sales])}
-→ CALCULATE(SUM(...), ALLEXCEPT('Table', 'Table'[Region], 'Table'[Category]))
-
-{EXCLUDE [Category] : SUM([Sales])}
-→ CALCULATE(SUM(...), REMOVEFILTERS('Table'[Category]))
-
-{FIXED : SUM(IF YEAR([Date]) = YEAR(TODAY()) THEN [Amount] ELSE 0 END)}
-→ CALCULATE(SUMX('Table', IF(YEAR(...) = YEAR(TODAY()), ...)), ALL('Table'))
-```
+Multiple physical keys use `SUMMARIZE` over all keys. Current approximation
+support covers direct physical-column aggregates and a bounded one-hop
+calculation reference within the same datasource, not arbitrary conditional
+FIXED bodies or multi-table ratios. A bare `CALCULATE(..., ALLEXCEPT(...))`
+is not sufficient to establish aggregation at a coarser view grain. See the
+[FIXED scope requirements](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships)
+for the exact path and the approximation boundaries. Native refresh, source
+filter behavior and value parity require separate verification.
 
 ### How does the SUM(IF) → SUMX conversion work?
 

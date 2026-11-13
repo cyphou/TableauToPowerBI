@@ -70,6 +70,13 @@ You are the **Extractor** agent for the Tableau to Power BI migration project. Y
 - TWB files are plain XML; TWBX files are ZIP archives containing a TWB + data extracts
 - Parameters have **two XML formats**: old (`<column[@param-domain-type]>`) and new (`<parameters><parameter>`)
 - Both formats must be extracted and deduplicated into `param_map`
+- Worksheet calculations retain parent `datasource_name`. Deduplicate by
+	datasource/raw name: collapse identical declarations, preserve contradictory
+	same-owner alternatives as `_source_declaration_conflicts` in calculation and
+	datasource exports. Never merge foreign homonyms or invent a missing owner.
+- Field `aggregation_candidates` and `aggregation_evidence` preserve observed
+	shelf choices. An inferred rendering SUM is not explicit source shelf evidence;
+	retain conflicts and unspecified uses for downstream diagnostic decisions.
 - Datasource extraction handles `[Table].[Column]` AND bare `[Column]` join clause formats
 - Tableau Server REST API uses PAT or password auth with paginated responses
 - Prefer a complete, explicit original database binding over Hyper in the same datasource before any Hyper data read/export. Normalize native worksheet/filter lineage too; incomplete or ambiguous DB bindings fail explicitly. File sources and unresolved published references do not qualify. Do not query the database during extraction.

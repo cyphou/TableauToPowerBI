@@ -233,17 +233,23 @@ Desktop rendering.
 
 ## 📐 Level of Detail (LOD) Expressions
 
-The FIXED patterns below are illustrative, not a guarantee of generated output
-or source equivalence. Filter order, shelf aggregation and total grain require
-proof; unverified cases can emit a diagnostic `TODO`/`BLANK()`.
+FIXED prioritizes the unchanged exact-proof path. Otherwise an explicit,
+consistent SUM/AVG/MIN/MAX shelf can emit SUMX/AVERAGEX/MINX/MAXX over all
+resolved physical FIXED keys in one table, limited to a bounded direct-column
+inner aggregate. Generated warnings name the inferred shelf and unverified
+source filters and totals. Inferred/default SUM is not shelf evidence; missing,
+unsupported or conflicting evidence retains annotated `TODO`/`BLANK()`.
+Bounded same-datasource one-hop references are supported, not arbitrary
+products, conditional inner aggregates or nested LOD. See the
+[DAX policy](TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions).
 
 ### FIXED
 
-| Tableau | DAX | Usage |
+| Tableau | Illustrative DAX, not a generator guarantee | Required context |
 |---------|-----|-------|
-| `{ FIXED : SUM([Sales]) }` | `CALCULATE(SUM([Sales]), ALL(Table))` | Grand total |
-| `{ FIXED [Region] : SUM([Sales]) }` | `CALCULATE(SUM([Sales]), ALLEXCEPT('Table', 'Table'[Region]))` | By region only |
-| `{ FIXED [Region], [Category] : SUM([Sales]) }` | `CALCULATE(SUM([Sales]), ALLEXCEPT('Table', 'Table'[Region], 'Table'[Category]))` | Multi-dimension |
+| `{ FIXED : SUM([Sales]) }` | `CALCULATE(SUM('Orders'[Sales]), ALL('Orders'))` | Manual grand-total pattern; source filter scope requires proof |
+| `{ FIXED [Region] : SUM([Sales]) }` | `SUMX(VALUES('Orders'[Region]), CALCULATE(SUM('Orders'[Sales])))` | Explicit SUM shelf, resolved physical key; warned approximation |
+| `{ FIXED [Region], [Category] : SUM([Sales]) }` | `SUMX(SUMMARIZE('Orders', 'Orders'[Region], 'Orders'[Category]), CALCULATE(SUM('Orders'[Sales])))` | Explicit SUM shelf, both physical keys resolved; warned approximation |
 
 ### INCLUDE
 
@@ -439,14 +445,14 @@ SUMX('Orders', IF('Orders'[order_status] <> "Cancelled", 'Orders'[quantity] * 'O
 2. `SUM(IF(...))` → `SUMX('Orders', IF(...))` — iterator needed because DAX `SUM()` only takes a column
 3. Bare `[column]` references → `'Orders'[column]` with table qualification
 
-### Example 2: LOD FIXED with Nested Conditions (YTD Revenue)
+### Example 2: Manual LOD FIXED with Conditions (Current-Year Revenue)
 
 **Tableau:**
 ```
 {FIXED : SUM(IF YEAR([transaction_date]) = YEAR(TODAY()) THEN [amount] ELSE 0 END)}
 ```
 
-**Illustrative DAX, not a certified generated expression:**
+**Manual DAX illustration, outside the bounded FIXED shelf fallback:**
 ```dax
 CALCULATE(
     SUMX('transactions', IF(YEAR('transactions'[transaction_date]) = YEAR(TODAY()), 'transactions'[amount], 0)),
@@ -454,10 +460,11 @@ CALCULATE(
 )
 ```
 
-**What happens:**
-1. `{FIXED : ...}` with no dimensions → `CALCULATE(..., ALL('table'))` (grand total across all rows)
-2. Inner `SUM(IF ...)` → `SUMX('table', IF(...))`
-3. `YEAR()` and `TODAY()` map directly
+**Manual review:**
+1. The conditional inner aggregate is outside the bounded direct-column fallback;
+    this is not a promised generated conversion
+2. The manual `SUMX` evaluates the condition per row
+3. This selects the current calendar year, not a general fiscal/YTD definition
 4. `ALL` removes removable filters from the specified table, not RLS; it does
    not establish equivalence to Tableau's source filter order or totals
 
@@ -468,14 +475,16 @@ CALCULATE(
 {FIXED [region], [channel] : SUM([quantity] * [unit_price])}
 ```
 
-**Illustrative DAX, not a certified generated expression:**
+**Manual DAX illustration, outside the bounded FIXED shelf fallback:**
 ```dax
 CALCULATE(SUMX('Orders', 'Orders'[quantity] * 'Orders'[unit_price]), ALLEXCEPT('Orders', 'Orders'[region], 'Orders'[channel]))
 ```
 
-**What happens:**
-1. `{FIXED dim1, dim2 : AGG}` → `CALCULATE(AGG, ALLEXCEPT('table', 'table'[dim1], 'table'[dim2]))`
-2. `ALLEXCEPT` removes all filters except the specified dimensions
+**Manual review:**
+1. The product inside SUM is outside the bounded direct-column fallback; this
+    manual iterator is not a promised generated conversion
+2. `ALLEXCEPT` retains the named dimension filters, but does not prove Tableau
+    filter order, shelf aggregation or total-grain equivalence
 
 ### Example 4: LOD EXCLUDE
 

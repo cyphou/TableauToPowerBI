@@ -5,7 +5,7 @@
 
 > **Load BEFORE writing frontend pages and components, during Step 1 (Frontend).** Contract between plan Section 5 (Design System & UI) and scaffolded JSX.
 
-> **Read first:** fidelity-agnostic **Shared design-quality principles** in [`../shared-references/frontend-quality-bar.md`](.github/agents/shared-references/frontend-quality-bar.md), shared design contract for planning preview + scaffold. This file adds **framework rendering layer** (per-library primitive mapping, theming, motion, dark mode).
+> **Read first:** fidelity-agnostic **Shared design-quality principles** in [`../shared-references/frontend-quality-bar.md`](../../shared-references/frontend-quality-bar.md), shared design contract for planning preview + scaffold. This file adds **framework rendering layer** (per-library primitive mapping, theming, motion, dark mode).
 
 ---
 

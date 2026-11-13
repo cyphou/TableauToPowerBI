@@ -31,10 +31,10 @@ import os
 import re
 import sys
 
+from powerbi_import.calc_column_utils import is_numeric_row_constant
 from powerbi_import.tableau_identity import (
     calculation_identity as _calculation_identity,
 )
-from powerbi_import.calc_column_utils import is_numeric_row_constant
 
 logger = logging.getLogger(__name__)
 
@@ -1314,8 +1314,8 @@ def _prepare_logical_relationship_measures(ctx, datasources, extra_objects, mode
     an empty filter list is not silently treated as evidence of no filters.
     Missing evidence and independently used pair scalars fail before healing.
     """
-    from powerbi_import.tmdl_dax_postprocess import compile_logical_relationship_sum
     from powerbi_import.errors import PartialGenerationError
+    from powerbi_import.tmdl_dax_postprocess import compile_logical_relationship_sum
 
     policies = extra_objects.get('logical_relationship_policies')
     if policies is None:
@@ -1824,6 +1824,158 @@ def _register_combined_group_calculation_bindings(
     return group_columns
 
 
+def _collect_fixed_shelf_aggregations(datasources, extra_objects, *,
+                                      resolved_formulas=None):
+    """Resolve consistent shelf usage without crossing datasource identities."""
+    datasource_aliases = {}
+    calculation_aliases = {}
+    calculations = {}
+    resolved = {}
+    supported = ('SUM', 'AVG', 'MIN', 'MAX')
+    for datasource_index, datasource in enumerate(datasources):
+        for key in ('name', 'caption', 'id', 'luid'):
+            alias = datasource.get(key)
+            if isinstance(alias, str) and alias:
+                datasource_aliases.setdefault(alias.strip('[]'), set()).add(
+                    datasource_index)
+        aliases = calculation_aliases.setdefault(datasource_index, {})
+        for calculation in datasource.get('calculations', []):
+            calculations[id(calculation)] = calculation
+            for alias in _calculation_identity(calculation):
+                if alias:
+                    aliases.setdefault(alias.casefold(), set()).add(id(calculation))
+
+    for datasource_index, datasource in enumerate(datasources):
+        aliases = calculation_aliases[datasource_index]
+        for calculation in datasource.get('calculations', []):
+            identity = id(calculation)
+            if any(len(aliases.get(alias.casefold(), ())) != 1
+                   for alias in _calculation_identity(calculation) if alias):
+                continue
+            formula = calculation.get('formula', '').strip()
+            direct = re.fullmatch(
+                r'(?:(SUM|AVG|MIN|MAX)\s*\(\s*)?'
+                r'(\{\s*FIXED\b[^{}]+\})\s*(?(1)\))',
+                formula, re.IGNORECASE | re.DOTALL)
+            if direct:
+                resolved[identity] = (identity, formula,
+                                      (direct.group(1) or '').upper())
+                continue
+            reference = re.fullmatch(
+                r'(?:(SUM|AVG|MIN|MAX)\s*\(\s*)?'
+                r'\[([^\]]+)\]\s*(?(1)\))', formula, re.IGNORECASE)
+            if not reference:
+                continue
+            targets = aliases.get(reference.group(2).casefold(), set())
+            if len(targets) != 1 or identity in targets:
+                continue
+            target_identity = next(iter(targets))
+            target = calculations[target_identity]
+            if any(len(aliases.get(alias.casefold(), ())) != 1
+                   for alias in _calculation_identity(target) if alias):
+                continue
+            target_formula = target.get('formula', '').strip()
+            if not re.fullmatch(r'\{\s*FIXED\b[^{}]+\}', target_formula,
+                                re.IGNORECASE | re.DOTALL):
+                continue
+            outer = (reference.group(1) or '').upper()
+            expanded = f'{outer}({target_formula})' if outer else target_formula
+            resolved[identity] = (target_identity, expanded, outer)
+
+    usages = {}
+    for worksheet_key in ('worksheets', '_worksheets'):
+        for worksheet in extra_objects.get(worksheet_key, []):
+            for field in worksheet.get('fields', []):
+                name = field.get('name')
+                if not isinstance(name, str) or not name:
+                    continue
+                name = _calculation_identity({'name': name})[0]
+                datasource = field.get('datasource')
+                owners = (datasource_aliases.get(datasource.strip('[]'), set())
+                          if isinstance(datasource, str) else set())
+                candidates = set()
+                for owner in owners or calculation_aliases.keys():
+                    candidates.update(
+                        calculation_aliases[owner].get(name.casefold(), set()))
+                if ('aggregation_candidates' in field
+                        or 'aggregation_evidence' in field):
+                    evidence = field.get('aggregation_candidates')
+                    aggregation = (evidence[0] if
+                        field.get('aggregation_evidence') == 'explicit'
+                        and isinstance(evidence, list) and len(evidence) == 1
+                        else None)
+                else:
+                    aggregation = field.get('aggregation')
+                aggregation = (aggregation.strip().upper()
+                               if isinstance(aggregation, str) else None)
+                if (len(owners) != 1 or len(candidates) != 1
+                        or aggregation not in supported):
+                    aggregation = None
+                for candidate in candidates:
+                    root, _, outer = resolved.get(candidate, (candidate, '', ''))
+                    if outer and outer != aggregation:
+                        aggregation = None
+                    usages.setdefault(root, set()).add(aggregation)
+
+    result = {}
+    for identity, (root, formula, outer) in resolved.items():
+        aggregations = usages.get(root, set())
+        if len(aggregations) != 1 or None in aggregations:
+            continue
+        aggregation = next(iter(aggregations))
+        if outer and outer != aggregation:
+            continue
+        result[identity] = aggregation
+        if resolved_formulas is not None:
+            resolved_formulas[identity] = formula
+    return result
+
+
+def _source_conflict_dependency_paths(datasources):
+    declarations = {}
+    owners = {}
+    for datasource in datasources:
+        datasource_name = datasource.get('name', '')
+        for calculation in datasource.get('calculations', []):
+            raw, _ = _calculation_identity(calculation)
+            if raw:
+                declarations.setdefault((datasource_name, raw), []).append(calculation)
+                owners[id(calculation)] = (datasource_name, raw)
+    paths: dict[int, tuple[tuple[str, str], ...]] = {
+        id(calculation): (identity,)
+        for identity, calculations in declarations.items()
+        for calculation in calculations
+        if calculation.get('_source_declaration_conflicts')
+    }
+    references = re.compile(
+        r'//[^\n]*|/\*[\s\S]*?\*/|"(?:""|\\.|[^"\\])*"'
+        r"|'(?:''|\\.|[^'\\])*'"
+        r'|(?:\[(?P<datasource>[^\]]+)\]\s*\.\s*)?\[(?P<raw>[^\]]+)\]')
+    dependencies = {}
+    for calculations in declarations.values():
+        for calculation in calculations:
+            datasource_name, _ = owners[id(calculation)]
+            dependencies[id(calculation)] = [
+                dependency
+                for match in references.finditer(calculation.get('formula', ''))
+                if match.group('raw') is not None
+                for dependency in declarations.get((
+                    match.group('datasource') or datasource_name, match.group('raw')), [])
+            ]
+    changed = True
+    while changed:
+        changed = False
+        for calculation_id, candidates in dependencies.items():
+            if calculation_id in paths:
+                continue
+            for candidate in candidates:
+                if id(candidate) in paths:
+                    paths[calculation_id] = (owners[calculation_id],) + paths[id(candidate)]
+                    changed = True
+                    break
+    return paths
+
+
 def _collect_semantic_context(datasources, extra_objects):
     """Phases 1-2c: Collect tables, deduplicate, and build DAX context mappings.
 
@@ -2059,6 +2211,7 @@ def _collect_semantic_context(datasources, extra_objects):
     # aggregation) so that _resolve_columns qualifies them via column_table_map
     # instead of leaving them as bare [col] measure references.
     measure_names = set()
+    measure_calculation_ids = set()
     _agg_pat_mn = re.compile(
         r'\b(SUM|AVG|AVERAGE|MIN|MAX|COUNT|COUNTD|MEDIAN|STDEV|STDEVP|'
         r'VAR|VARP|PERCENTILE|ATTR|CORR|COVAR|COVARP|COLLECT)\s*\(',
@@ -2081,6 +2234,7 @@ def _collect_semantic_context(datasources, extra_objects):
         if raw in param_map or caption in param_map.values():
             is_calc_col = False
         if not is_calc_col:
+            measure_calculation_ids.add(id(calc))
             measure_names.add(calculation_target_names.get(id(calc), caption))
             if calculation_target_names.get(id(calc), caption) != caption:
                 measure_names.add(caption)
@@ -2091,6 +2245,8 @@ def _collect_semantic_context(datasources, extra_objects):
     measure_names.update(
         sanitize_param_brackets(caption) for caption in param_map.values()
     )
+
+    source_conflict_paths = _source_conflict_dependency_paths(datasources)
 
     # param_values: {caption: literal_value} for inlining in calculated columns
     param_values = {}
@@ -2119,6 +2275,8 @@ def _collect_semantic_context(datasources, extra_objects):
         re.IGNORECASE,
     )
     for calc in all_calculations:
+        if id(calc) in source_conflict_paths:
+            continue
         _, caption = _calculation_identity(calc)
         formula = calc.get('formula', '').strip()
         if caption and formula and '[' not in formula:
@@ -2194,6 +2352,41 @@ def _collect_semantic_context(datasources, extra_objects):
             "verified_fixed_scopes must map datasource names and calculation "
             "identities to proof objects")
 
+    fixed_shelf_formulas = {}
+    fixed_shelf_aggregations = _collect_fixed_shelf_aggregations(
+        datasources, extra_objects, resolved_formulas=fixed_shelf_formulas)
+    fixed_shelf_calc_maps = {}
+    fixed_shelf_column_maps = {}
+    fixed_shelf_measure_names = {}
+    for datasource in datasources:
+        local_calc_map = {}
+        local_columns = {}
+        local_measure_names = set()
+        for table in datasource.get('tables', []):
+            name = table.get('name', 'Table1')
+            owner = table_rename_map.get((datasource.get('name', ''), name), name)
+            for column in table.get('columns', []):
+                name = column.get('name')
+                if not name or column.get('calculation') or column.get('expression'):
+                    continue
+                if name in local_columns and local_columns[name] != owner:
+                    local_columns[name] = None
+                else:
+                    local_columns[name] = owner
+        for calculation in datasource.get('calculations', []):
+            target = calculation_target_names.get(id(calculation))
+            if id(calculation) in measure_calculation_ids:
+                local_measure_names.update(
+                    alias for alias in (*_calculation_identity(calculation), target)
+                    if alias)
+            for alias in _calculation_identity(calculation):
+                if alias and target:
+                    local_calc_map[alias] = target
+        for calculation in datasource.get('calculations', []):
+            fixed_shelf_calc_maps[id(calculation)] = local_calc_map
+            fixed_shelf_column_maps[id(calculation)] = local_columns
+            fixed_shelf_measure_names[id(calculation)] = local_measure_names
+
     dax_context = {
         'calc_map': calc_map,
         'param_map': param_map,
@@ -2201,9 +2394,15 @@ def _collect_semantic_context(datasources, extra_objects):
         'measure_names': measure_names,
         'calculation_target_names': calculation_target_names,
         'param_values': param_values,
+        'source_conflict_paths': source_conflict_paths,
         'ds_column_table_map': ds_column_table_map,
         'datasource_table_map': datasource_table_map,
         'verified_fixed_scopes': verified_fixed_scopes,
+        'fixed_shelf_aggregations': fixed_shelf_aggregations,
+        'fixed_shelf_formulas': fixed_shelf_formulas,
+        'fixed_shelf_calc_maps': fixed_shelf_calc_maps,
+        'fixed_shelf_column_maps': fixed_shelf_column_maps,
+        'fixed_shelf_measure_names': fixed_shelf_measure_names,
     }
 
     # Build compute_using_map from worksheet table_calcs for PARTITIONBY/ORDERBY
@@ -3495,11 +3694,21 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     measure_names_ctx = dax_context.get('measure_names', set())
     parameter_names = (set(dax_context.get('param_map', {}))
                        | set(dax_context.get('param_map', {}).values()))
+    source_conflict_paths = dax_context.get('source_conflict_paths')
+    if source_conflict_paths is None:
+        datasource_calculations = {}
+        for calculation in calculations:
+            datasource_calculations.setdefault(
+                calculation.get('datasource_name', ''), []).append(calculation)
+        source_conflict_paths = _source_conflict_dependency_paths([
+            {'name': name, 'calculations': items}
+            for name, items in datasource_calculations.items()
+        ])
 
     # Pair-grain measures are already compiled from source provenance.
     generic_calculations = []
     for calc in calculations:
-        if '_logical_expression' not in calc:
+        if '_logical_expression' not in calc or id(calc) in source_conflict_paths:
             generic_calculations.append(calc)
             continue
         result_table['measures'].append({
@@ -3512,6 +3721,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
     calculations = generic_calculations
     constant_one_aliases = {}
     for candidate in calculations:
+        if id(candidate) in source_conflict_paths:
+            continue
         candidate_formula = candidate.get('formula', '').strip()
         if not re.fullmatch(r'1(?:\.0+)?', candidate_formula):
             continue
@@ -3674,10 +3885,12 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         formula = calc.get('formula', '').strip()
         role = calc.get('role', 'measure')
         datatype = calc.get('datatype', 'string')
+        has_source_conflict = bool(calc.get('_source_declaration_conflicts'))
+        source_conflict_path = source_conflict_paths.get(id(calc), ())
 
         # Skip calculations with no formula (e.g. categorical-bin groups)
         # to avoid generating measures with empty expressions.
-        if not formula:
+        if not formula and not source_conflict_path:
             continue
 
         # Pure string-literal formulas (e.g. Tableau constant fields like
@@ -3690,7 +3903,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         # column-ref classifier) avoids misreading [brackets] that appear
         # *inside* the string literal as real column references.
         _stripped = formula.strip()
-        if _stripped.startswith('"') and _stripped.endswith('"') and len(_stripped) > 2:
+        if (not source_conflict_path and _stripped.startswith('"')
+            and _stripped.endswith('"') and len(_stripped) > 2):
             # Well-formed iff every interior double-quote is doubled (escaped):
             # removing the doubled pairs must leave no stray quote.
             well_formed = _stripped[1:-1].replace('""', '').count('"') == 0
@@ -3784,7 +3998,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
 
         scopes_by_calculation = dax_context.get('verified_fixed_scopes', {}).get(
             calc.get('datasource_name', ''), {})
-        dax_formula = convert_tableau_formula_to_dax(
+        dax_formula = 'BLANK()' if source_conflict_path else convert_tableau_formula_to_dax(
             formula,
             column_name=calc_name,
             table_name=table_name,
@@ -3803,8 +4017,43 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             validate_output=True,
             fallback_on_invalid=True,
             verified_fixed_scope=scopes_by_calculation.get(calc_name),
+            fixed_shelf_aggregation=(
+                dax_context.get('fixed_shelf_aggregations', {}).get(id(calc))
+                if not is_calc_col else None),
         )
-        if has_makepoint:
+        fixed_shelf = dax_context.get('fixed_shelf_aggregations', {}).get(id(calc))
+        fixed_formula = dax_context.get('fixed_shelf_formulas', {}).get(id(calc))
+        if (not source_conflict_path and not is_calc_col and fixed_shelf and fixed_formula
+                 and (fixed_formula.strip() != formula.strip()
+                     or 'TODO: DAX conversion validation failed' in dax_formula
+                     or 'approximation; source filter scope' in dax_formula)):
+            local_columns = dax_context.get('fixed_shelf_column_maps', {}).get(
+                id(calc), {})
+            dax_formula = convert_tableau_formula_to_dax(
+                fixed_formula, column_name=calc_name, table_name=table_name,
+                calc_map=dax_context.get('fixed_shelf_calc_maps', {}).get(id(calc)),
+                column_table_map=local_columns,
+                measure_names=dax_context.get('fixed_shelf_measure_names', {}).get(
+                    id(calc), set()),
+                table_columns={name for name, owner in local_columns.items()
+                               if owner == table_name},
+                validate_output=True, fallback_on_invalid=True,
+                fixed_shelf_aggregation=fixed_shelf,
+            )
+        if source_conflict_path:
+            target_kind = 'column' if is_calc_col else 'measure'
+            reason = 'conflicting source calculation declarations'
+            if not has_source_conflict:
+                dependency_path = ' -> '.join(
+                    f'{datasource}::{raw}' for datasource, raw in source_conflict_path)
+                reason = f'depends on {reason}: {dependency_path}'
+                reason = (reason.replace('*/', '* /').replace('\r', ' ').replace('\n', ' ')
+                          .replace('[', '(').replace(']', ')'))
+            dax_formula = (
+                f'/* TODO: DAX conversion validation failed for {target_kind}: '
+                f'{reason} */ BLANK()'
+            )
+        elif has_makepoint:
             target_kind = 'column' if is_calc_col else 'measure'
             dax_formula = (
                 f'/* TODO: DAX conversion validation failed for {target_kind}: '
@@ -3818,7 +4067,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             )
         constant_sum = re.fullmatch(
             r'\s*SUM\s*\(\s*\[([^\]]+)\]\s*\)\s*', formula, re.IGNORECASE)
-        if constant_sum:
+        if constant_sum and not source_conflict_path:
             one_calculations = constant_one_aliases.get(constant_sum.group(1), set())
             if len(one_calculations) == 1:
                 # Tableau SUM of an explicit row-level constant 1 is a row
@@ -3836,6 +4085,15 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             'DAX conversion failed: ' + conversion_failure.group(1).strip()
             if conversion_failure else ''
         )
+        fixed_approximation = re.match(
+            r'/\*\s*(shelf \((?:sum|avg|min|max):\) approximation; '
+            r'source filter scope and totals unverified)\s*\*/', dax_formula,
+            re.IGNORECASE,
+        )
+        if fixed_approximation:
+            migration_note = 'FIXED ' + fixed_approximation.group(1)
+            logger.warning("%s for '%s' on table '%s'",
+                           migration_note, calc_name, table_name)
 
         # Phase 3: record conversion guard fallback to recovery
         if dax_formula and 'TODO: DAX conversion validation failed' in dax_formula:
@@ -3966,6 +4224,10 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             }
             if migration_note:
                 bim_measure['_migration_note'] = migration_note
+                if fixed_approximation:
+                    bim_measure['annotations'] = [{
+                        'name': 'MigrationNote', 'value': migration_note,
+                    }]
             # Propagate description from Tableau (if extracted)
             calc_desc = calc.get('description', '')
             if calc_desc:
@@ -3974,6 +4236,17 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             original_formula = calc.get('formula', '')
             if original_formula:
                 bim_measure['_original_formula'] = original_formula
+            if fixed_approximation:
+                identity = bim_measure.pop('_tableau_calculation_identity')
+                bim_measure.pop('_original_formula', None)
+                bim_measure['annotations'].extend([
+                    {'name': 'TableauOriginalFormula', 'value': original_formula},
+                    {'name': 'TableauCalculationIdentity',
+                     'value': json.dumps(identity, ensure_ascii=False)},
+                ])
+                if not calc_desc:
+                    bim_measure['description'] = (
+                        f'Migrated from Tableau: {original_formula} | DAX: {dax_formula}')
             # Propagate lineage metadata from calculation
             if calc.get('_source_workbooks'):
                 bim_measure['_source_workbooks'] = calc['_source_workbooks']

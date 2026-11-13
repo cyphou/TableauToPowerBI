@@ -84,7 +84,7 @@ Requires scaffolded project. Before start verify:
 | Identify the migration tool | From artifact/plan: Knex (Node.js) / Alembic (Python) / EF Core (.NET). If absent, add stack convention + config. |
 | Derive the schema from the entities + handlers | Define table per handler-used entity type / collection. Read data-access patterns; match actual read/written columns + types. |
 | Write the migration(s) | Each migration MUST have complete `up()` with `CREATE TABLE` (all columns, types) + reversing `down()`. **Empty migration files do NOT satisfy this step.** List directory afterward; verify every file non-zero. |
-| Add constraints | `UNIQUE` on business-unique fields, `FOREIGN KEY` with `ON DELETE`, `CHECK` for enums, `INDEX` on queried columns. See [migrations.md](.github/agents/azure-project-integrate/references/migrations.md). |
+| Add constraints | `UNIQUE` on business-unique fields, `FOREIGN KEY` with `ON DELETE`, `CHECK` for enums, `INDEX` on queried columns. See [migrations.md](references/migrations.md). |
 | Create / confirm the migration runner | Script/command for forward apply + rollback. Add missing npm/poetry/dotnet script (e.g. `"migrate"`, `"migrate:rollback"`). |
 | Verify table names match handlers | Cross-reference every table with handler collection/table names. Document mapping when `collectionToTable` map exists. |
 | Apply the migrations | Run migrate command against local database; start documented local DB / emulator. Require **zero errors** + existing tables. |
@@ -114,7 +114,7 @@ Requires scaffolded project. Before start verify:
 | Probe representative endpoints | Exercise at least one endpoint per entity area: `GET` list/read, ideally one write. Require structured response or well-formed validation/`4xx`, **not** `500` from missing table/crashed service. Clean missing-auth/body `4xx` = PASS; `500` = investigate FAIL. |
 | Stop the host when done | Stop backend after probes; leave running only for concurrent Step 4 use. |
 
-**Reference**: [smoke-test.md](.github/agents/azure-project-integrate/references/smoke-test.md): per-runtime start commands, host-output reading, pass/fail matrix.
+**Reference**: [smoke-test.md](references/smoke-test.md): per-runtime start commands, host-output reading, pass/fail matrix.
 
 > **✅ Checkpoint**:
 > - Backend builds with zero errors; host starts.
@@ -145,7 +145,7 @@ Requires scaffolded project. Before start verify:
 
 > ⚠️ **No mock data may remain in use.** Frontend `src/` search for `mock` / `mockData` / `previewState` must find no live imports. `useState<any>` or untyped responses = NOT done.
 
-> **Reference**: [wire-live-data.md](.github/agents/azure-project-integrate/references/wire-live-data.md): one-file seam swap, typed-client pattern, per-framework dev-proxy config.
+> **Reference**: [wire-live-data.md](references/wire-live-data.md): one-file seam swap, typed-client pattern, per-framework dev-proxy config.
 
 > **✅ Checkpoint**:
 > - Frontend builds with zero errors + zero `any`.
@@ -169,7 +169,7 @@ Requires scaffolded project. Before start verify:
 | Capture evidence | Record request/response path + status proving frontend → backend wiring. |
 | Shut down cleanly | Stop both processes after verification. |
 
-**Reference**: [end-to-end.md](.github/agents/azure-project-integrate/references/end-to-end.md): cross-platform concurrent processes + evidence reading.
+**Reference**: [end-to-end.md](references/end-to-end.md): cross-platform concurrent processes + evidence reading.
 
 > **✅ Checkpoint**:
 > - Frontend + backend ran concurrently.

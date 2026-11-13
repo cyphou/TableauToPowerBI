@@ -18,7 +18,6 @@ from extract_primitives import (
     _strip_brackets,
 )
 
-
 _LABEL_REF_PART = r'\[(?:[^\]]|\]\])+\]'
 _LABEL_REF_TOKEN = re.compile(rf'<({_LABEL_REF_PART}(?:\.{_LABEL_REF_PART})*)>')
 _LABEL_REF_WITH_SPACE = re.compile(
@@ -259,6 +258,18 @@ def extract_worksheet_fields(worksheet):
     """Extracts fields used in the worksheet"""
     fields = []
 
+    def record_aggregation(entry, candidates=None, inferred=False):
+        if candidates is None:
+            candidates = [entry.get('aggregation') or 'unspecified']
+        observed = entry.setdefault('aggregation_candidates', [])
+        for candidate in candidates:
+            if candidate not in observed:
+                observed.append(candidate)
+        entry['aggregation_evidence'] = (
+            'inferred' if inferred else
+            'unspecified' if 'unspecified' in observed else 'explicit'
+        )
+
     # Regex for Tableau derivation prefixes (none, sum, avg, count, usr, yr, etc.)
     derivation_re = r'^(none|sum|avg|count|cnt|ctd|countd|min|max|usr|yr|mn|dy|qr|wk|attr|md|mdy|hms|hr|mt|sc|thr|trunc|tyr|tqr|tmn|tdy|twk):'
     suffix_re = r':(nk|qk|ok|fn|tn)(?::\d+)?$'
@@ -413,6 +424,11 @@ def extract_worksheet_fields(worksheet):
         if not clean or clean.startswith('__tableau_internal'):
             continue
         if (clean, ds_ref) in existing_for_slices:
+            for entry in fields:
+                if (entry.get('name'), entry.get('datasource')) == (clean, ds_ref):
+                    if 'aggregation_candidates' not in entry:
+                        record_aggregation(entry)
+                    record_aggregation(entry, [shelf_agg or 'unspecified'])
             continue
         existing_for_slices.add((clean, ds_ref))
         entry = {'name': clean, 'shelf': 'detail', 'datasource': ds_ref}
@@ -482,12 +498,28 @@ def extract_worksheet_fields(worksheet):
                 # Only include columns that are measures (or User-derived calcs)
                 if col_name not in measure_cols and deriv != 'User':
                     continue
+                # Map derivation to aggregation key for PBI
+                agg_key = deriv.lower() if deriv != 'User' else ''
+                instance_match = re.match(
+                    r'^(cnt|count|ctd|countd|sum|avg|min|max|median|attr|stdev|stdevp|var|varp):',
+                    ci.get('name', '').strip('[]'),
+                )
+                candidates = []
+                if instance_match:
+                    candidates.append(instance_match.group(1))
+                if agg_key:
+                    candidates.append('attr' if agg_key == 'attribute' else agg_key)
+                if not candidates:
+                    candidates.append('unspecified')
                 if col_name in existing_names:
+                    for entry in fields:
+                        if (entry.get('name'), entry.get('datasource')) == (col_name, ds_ref):
+                            if 'aggregation_candidates' not in entry:
+                                record_aggregation(entry)
+                            record_aggregation(entry, candidates)
                     continue
                 existing_names.add(col_name)
                 expanded_any = True
-                # Map derivation to aggregation key for PBI
-                agg_key = deriv.lower() if deriv != 'User' else ''
                 field_entry = {
                     'name': col_name,
                     'shelf': 'measure_value',
@@ -495,6 +527,7 @@ def extract_worksheet_fields(worksheet):
                 }
                 if agg_key:
                     field_entry['aggregation'] = agg_key
+                record_aggregation(field_entry, candidates)
                 fields.append(field_entry)
 
         # Fallback: if no <column-instance> entries provided explicit
@@ -517,7 +550,13 @@ def extract_worksheet_fields(worksheet):
                         'shelf': 'measure_value',
                         'datasource': ds_ref,
                         'aggregation': 'sum',
+                        'aggregation_evidence': 'inferred',
+                        'aggregation_candidates': ['unspecified'],
                     })
+
+    for entry in fields:
+        if 'aggregation_candidates' not in entry:
+            record_aggregation(entry)
 
     return fields
 

@@ -54,11 +54,20 @@ See [known limitations](KNOWN_LIMITATIONS.md) and the
 | Feature | Introduced | Support |
 |---------|-----------|---------|
 | Basic calculated fields | All | ✅ |
-| FIXED LOD expressions | 2015.x | ⚠️ Scope and grain require proof; unverified cases can emit TODO/BLANK |
+| FIXED LOD expressions | 2015.x | ⚠️ Exact proof first; bounded, warned shelf iterator otherwise, or diagnostic TODO/BLANK |
 | INCLUDE LOD expressions | 2015.x | ✅ → CALCULATE(AGG) |
 | EXCLUDE LOD expressions | 2015.x | ✅ → CALCULATE(AGG, REMOVEFILTERS) |
-| Nested LOD | All | ⚠️ Approximated |
+| Nested LOD | All | ⚠️ No general conversion guarantee; outside the bounded FIXED shelf fallback |
 | Table calculations (RUNNING, RANK, WINDOW) | All | ⚠️ Approximated |
+
+The [FIXED policy](TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions)
+keeps exact-proof requirements unchanged. Its fallback requires an explicit,
+consistent SUM/AVG/MIN/MAX shelf, all physical FIXED keys resolved in one table,
+and a bounded direct-column inner aggregate. Warnings disclose the inferred
+shelf and unverified filters/totals; inferred/default SUM is not shelf evidence.
+Bounded same-datasource one-hop references do not imply arbitrary product,
+conditional or nested-LOD support. Missing or ambiguous evidence remains
+annotated `TODO`/`BLANK()`, not a version-wide success claim.
 
 ### Data Sources
 

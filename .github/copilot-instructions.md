@@ -250,6 +250,14 @@ The DAX context is managed in `tmdl_generator.py` via dictionaries:
 - `param_values`: parameter → inline value
 - `col_metadata_map`: column name → {hidden, semantic_role, description}
 
+Calculation identity includes the datasource and raw calculation name. Worksheet
+calculations retain their parent `datasource_name`; identical declarations
+collapse, while contradictory same-owner declarations retain
+`_source_declaration_conflicts` in calculation and datasource exports. Conflicts
+keep the affected calculations and transitive exact-raw-reference consumers
+diagnostic before literal, constant-one or FIXED optimization. Unrelated valid
+calculations remain available; unknown ownership is not assigned by first match.
+
 ## Supported DAX Conversions (133+)
 
 | Category | Tableau | DAX |
@@ -260,7 +268,7 @@ The DAX context is managed in `tmdl_generator.py` via dictionaries:
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP, SIN, COS, TAN | identical or mapped |
 | Stats | MEDIAN, STDEV, STDEVP, VAR, VARP, PERCENTILE, CORR, COVAR | MEDIAN, STDEV.S, STDEV.P, VAR.S, VAR.P, PERCENTILE.INC, CORREL, COVARIANCE.S |
 | Conversion | INT, FLOAT, STR, DATE, DATETIME | INT, CONVERT, FORMAT, DATE, DATE |
-| LOD | {FIXED dims : AGG} | Illustrative CALCULATE(AGG, ALLEXCEPT); unproved scope may emit TODO/BLANK |
+| LOD | {FIXED dims : AGG} | Exact DAX with verified scope; otherwise a resolved SUM/AVG/MIN/MAX shelf can emit an annotated iterator over physical FIXED keys; unresolved cases retain TODO/BLANK |
 | LOD | {INCLUDE dims : AGG} | CALCULATE(AGG) |
 | LOD | {EXCLUDE dims : AGG} | CALCULATE(AGG, REMOVEFILTERS) |
 | Table Calc | RUNNING_SUM/AVG/COUNT | CALCULATE(SUM/AVERAGE/COUNT) |
@@ -446,6 +454,20 @@ Power BI Desktop openability.
     - New: `<parameters><parameter>` (Tableau Desktop modern)
     - `param_map` populated from both sources for DAX reference resolution
     - `[Parameters].[X]` → `[Caption]` (measure) or inlined literal (calc column)
+
+  ### FIXED Migration Policy
+
+  Preserve an editable formula when source shelf evidence supports one. Use three
+  levels: proven equivalence emits exact DAX without an approximation warning;
+  resolved physical FIXED keys and an explicit, consistent `sum:`, `avg:`, `min:` or `max:`
+  shelf emit the corresponding iterator with a warning naming the inferred shelf,
+  unverified source filter scope and totals; missing or ambiguous evidence retains
+  an annotated `BLANK()`. Never claim an approximation is exact or lower the
+  existing verified-scope proof requirements. Current approximation support is
+  bounded to direct column aggregates and physical keys in one table. Preserve
+  every FIXED key; do not select an arbitrary shelf across conflicting uses or
+  datasources. An extractor's inferred/default SUM is not shelf evidence. A
+  generated formula is not native execution or value-parity proof.
 
 ## Best Practices
 

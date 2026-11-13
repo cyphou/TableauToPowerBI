@@ -5,13 +5,13 @@
 
 > Frontend matches backend quality: typed, tested, structured.
 
-> **Companion contract**: For **visual** quality—rendering Section 6 layout tokens with real library primitives, theming from plan palette, and four-state coverage—read [frontend-quality-bar.md](.github/agents/shared-references/frontend-quality-bar.md). This file covers structure (types, hooks, services, error handling); quality bar defines each region's rendering.
+> **Companion contract**: For **visual** quality—rendering Section 6 layout tokens with real library primitives, theming from plan palette, and four-state coverage—read [frontend-quality-bar.md](frontend-quality-bar.md). This file covers structure (types, hooks, services, error handling); quality bar defines each region's rendering.
 
 ---
 
 ## Core Principle
 
-**Frontend is not second-class.** Consume shared types, enforce its own test gate, and use consistent data-fetching, error-handling, component patterns. **Plan layout tokens are intent, not literal `<div>`s**—see [frontend-quality-bar.md](.github/agents/shared-references/frontend-quality-bar.md).
+**Frontend is not second-class.** Consume shared types, enforce its own test gate, and use consistent data-fetching, error-handling, component patterns. **Plan layout tokens are intent, not literal `<div>`s**—see [frontend-quality-bar.md](frontend-quality-bar.md).
 
 ---
 

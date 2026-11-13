@@ -922,7 +922,9 @@ class TestGenerateProject(unittest.TestCase):
 
     def test_migration_summary_uses_final_openability_result(self):
         from unittest.mock import patch
+
         import healing
+
         import migrate
         from powerbi_import.openability import CheckResult, OpenabilityReport
 
@@ -2506,6 +2508,8 @@ class TestDiscreteMonthRegressions(unittest.TestCase):
         self.assertEqual(worksheet['fields'][0], {
             'name': 'Order Date', 'shelf': 'columns', 'datasource': 'ds',
             'derivation': 'Month', 'date_part': 'mn',
+            'aggregation_candidates': ['unspecified'],
+            'aggregation_evidence': 'unspecified',
             'is_discrete': True, 'is_continuous': False})
         visuals = os.path.join(self.temp.name, 'quantity-visual')
         self.gen._create_visual_worksheet(

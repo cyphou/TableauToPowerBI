@@ -167,7 +167,7 @@ seed().catch(console.error);
 
 ### Python and C# Migrations
 
-For Python migrations (Alembic + SQLAlchemy), see [runtimes/python.md](.github/agents/shared-references/runtimes/python.md). For C# migrations (Entity Framework Core), see [runtimes/dotnet.md](.github/agents/shared-references/runtimes/dotnet.md).
+For Python migrations (Alembic + SQLAlchemy), see [runtimes/python.md](runtimes/python.md). For C# migrations (Entity Framework Core), see [runtimes/dotnet.md](runtimes/dotnet.md).
 
 ---
 

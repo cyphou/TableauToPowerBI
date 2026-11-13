@@ -28,6 +28,12 @@ upload API are separate surfaces. The standalone Windows desktop application
 and executable packaging have been removed; PowerShell remains a browser
 launcher, and Power BI/Tableau Desktop remain optional diagnostic prerequisites.
 
+See the [project overview's dated verification evidence](../README.md) for the
+latest reported local status; older green baselines are historical, not a
+current release certification. Calculation review follows the
+[bounded FIXED policy](TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions)
+and [datasource-scoped identity contract](ARCHITECTURE.md#calculation-source-identity-contract).
+
 ## Operator guides
 
 | Guide | What it covers |

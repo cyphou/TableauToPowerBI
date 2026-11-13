@@ -121,6 +121,18 @@ config default; explicitly passing both CLI flags is a configuration error.
 This is diagnostic retention, not a readiness mode or permission to bypass
 integrity guards.
 
+Calculations sharing a datasource and raw ID retain one canonical record, with
+distinct alternate declarations preserved under `_source_declaration_conflicts`.
+Differences in formula, class, datatype, role, type or caption are conflicts;
+identical declarations collapse, while different datasources remain separate.
+Conflicted calculations and their transitive exact-raw-reference consumers emit
+diagnostic TODO/BLANK placeholders before literal, constant-one or FIXED
+optimizations. No declaration is arbitrarily selected for execution, and
+unrelated valid calculations remain. Ordinary batch recovery retains a
+diagnostic PBIP subject to the existing recovery checks, with `FAIL` and nonzero
+status. These diagnostics do not resolve the source disagreement or establish
+native execution or value parity.
+
 After safe XML parsing, known object-level preflight refusals and refused
 datasource normalization/extraction may be isolated. Incremental stage JSON and
 raw refused declarations/formulas are retained as diagnostics, with credential
@@ -434,9 +446,20 @@ outer Tableau brackets are removed). Each scope must provide
 `source_filters` or `target_filters` may be empty only when the caller has
 verified there are none. These fields are proof assertions, not evidence the
 generator can discover: do not copy them between workbooks or set them merely
-to bypass a placeholder. Missing/invalid proof keeps the DAX blocked. This
-path does not cover multi-table LOD ratios, arbitrary `FIXED` bodies, or
-automatic shelf-grain discovery.
+to bypass a placeholder. Missing/invalid proof cannot produce a claim of exact
+equivalence. This exact path does not cover multi-table LOD ratios or arbitrary
+`FIXED` bodies.
+
+Without exact proof, explicit, consistent `sum:`, `avg:`, `min:` or `max:`
+worksheet shelf evidence can produce an annotated SUMX/AVERAGEX/MINX/MAXX over
+all resolved physical FIXED keys. Support is limited to direct physical-column
+aggregates in one table, including a one-hop calculation reference within the
+same datasource and a matching optional outer aggregation. The comment and
+MigrationNote name the shelf and state that source filter scope and totals are
+unverified. Missing, inferred, unsupported or conflicting shelf evidence, or
+unresolved bindings, retain diagnostic `BLANK()`. A default SUM chosen for
+visual rendering is not evidence of a source shelf. Generated DAX and static
+validation do not establish native execution or source/target value parity.
 
 ### Functions with No DAX Equivalent
 

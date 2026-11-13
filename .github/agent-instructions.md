@@ -41,6 +41,13 @@ These are real bugs that occurred during development. Review before every implem
 - `resolve_visual_type` was accidentally shadowed by a second definition with different return type — check for duplicate function names in the same file
 - Tables are deduplicated by the extractor (`type="table"` filtering) — don't re-deduplicate downstream
 - Parameters appear in both old and new XML formats — both feed `param_map`, so dedup logic must handle both sources
+- Worksheet calculations retain parent `datasource_name`. Deduplicate calculations
+   by datasource/raw name, not workbook-wide raw name. Collapse identical
+   declarations; retain contradictory same-owner alternatives as
+   `_source_declaration_conflicts` in calculation and datasource exports.
+- Conflicted calculations and their transitive exact-raw-reference consumers
+   remain diagnostic before literal, constant-one or FIXED optimizations. Preserve
+   unrelated valid calculations; do not resolve missing ownership by first match.
 
 ### API & Signature Mismatches
 - Test function signatures MUST match implementation — if you change a constructor, update ALL callers AND tests
@@ -96,6 +103,18 @@ These are real bugs that occurred during development. Review before every implem
 ---
 
 ## Project-Specific Rules
+
+**FIXED migration policy:** prefer supported exact proof without an approximation
+warning or relaxed proof requirements. Otherwise, retain an editable, annotated
+approximation only when physical FIXED keys and an explicit, consistent source
+shelf aggregation are resolved within the bounded policy:
+`sum:`/`avg:`/`min:`/`max:` select SUMX/AVERAGEX/MINX/MAXX over all FIXED keys,
+with source filter scope and totals explicitly unverified. Missing, unsupported
+or conflicting shelf evidence retains annotated `BLANK()`; never invent SUM or
+fabricate a verified scope. The implemented approximation is limited to direct
+column aggregates over physical keys in one table. Keep warnings in generated
+TMDL and distinguish static validation from native execution and value parity.
+An inferred/default SUM from extraction is not explicit shelf evidence.
 
 1. **Calculated columns vs measures** — 3-factor classification:
    - Has aggregation (SUM, COUNT...) → measure

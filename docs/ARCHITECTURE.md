@@ -146,6 +146,35 @@ For environments without Mermaid rendering:
               +-------------------------------+
 ```
 
+## Calculation source identity contract
+
+Extraction preserves `datasource_name` on worksheet-only calculations and
+deduplicates declarations by `(datasource_name, raw name)`, not by caption or a
+workbook-global calculation ID. Identical declarations collapse; contradictory
+declarations within the same datasource retain their alternatives rather than
+silently choosing one. Same-named calculations in different datasources remain
+independent.
+
+Generation marks conflicting declarations and their transitive exact-raw-reference
+consumers with diagnostic `TODO`/`BLANK()` before constant/literal or FIXED
+optimizations can mask the conflict. Dependency validation uses proven datasource
+consumer identities; ambiguous bindings stay diagnostic. Unrelated valid
+calculations are retained. The extraction boundary is implemented in
+[`extract_tableau_data.py`](../tableau_export/extract_tableau_data.py); generation
+and conflict propagation are in
+[`tmdl_generator.py`](../powerbi_import/tmdl_generator.py).
+
+FIXED compilation prioritizes the unchanged exact-proof path. Its bounded
+fallback requires an explicit, consistent SUM/AVG/MIN/MAX shelf, all physical
+keys resolved in one table and a direct-column inner aggregate; it emits an
+iterator with a warning naming the inferred shelf and unverified filters/totals.
+Inferred/default SUM is not evidence. Bounded same-datasource one-hop references
+are supported, not arbitrary products, conditional inner aggregates or nested
+LOD. Missing or ambiguous evidence retains annotated `TODO`/`BLANK()`. See the
+[DAX policy](TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions).
+These are static producer/consumer contracts, not native execution or value-parity
+evidence.
+
 ## Diagnostic recovery boundary
 
 The normal extraction-to-generation path above describes complete inputs.

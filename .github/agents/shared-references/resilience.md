@@ -142,7 +142,7 @@ try {
 }
 ```
 
-See Python and C# try/fallback patterns in [runtimes/python.md](.github/agents/shared-references/runtimes/python.md) and [runtimes/dotnet.md](.github/agents/shared-references/runtimes/dotnet.md).
+See Python and C# try/fallback patterns in [runtimes/python.md](runtimes/python.md) and [runtimes/dotnet.md](runtimes/dotnet.md).
 
 ---
 
@@ -171,7 +171,7 @@ const caption = await withTimeout(
 );
 ```
 
-See Python and C# timeout patterns in [runtimes/python.md](.github/agents/shared-references/runtimes/python.md) and [runtimes/dotnet.md](.github/agents/shared-references/runtimes/dotnet.md).
+See Python and C# timeout patterns in [runtimes/python.md](runtimes/python.md) and [runtimes/dotnet.md](runtimes/dotnet.md).
 
 ---
 
@@ -212,7 +212,7 @@ async function withRetry<T>(
 }
 ```
 
-See Python and C# retry patterns in [runtimes/python.md](.github/agents/shared-references/runtimes/python.md) and [runtimes/dotnet.md](.github/agents/shared-references/runtimes/dotnet.md).
+See Python and C# retry patterns in [runtimes/python.md](runtimes/python.md) and [runtimes/dotnet.md](runtimes/dotnet.md).
 
 ---
 
@@ -238,7 +238,7 @@ const [blobUrl, caption] = await Promise.all([
 ]);
 ```
 
-See Python and C# parallel-call patterns in [runtimes/python.md](.github/agents/shared-references/runtimes/python.md) and [runtimes/dotnet.md](.github/agents/shared-references/runtimes/dotnet.md).
+See Python and C# parallel-call patterns in [runtimes/python.md](runtimes/python.md) and [runtimes/dotnet.md](runtimes/dotnet.md).
 
 ---
 

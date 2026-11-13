@@ -159,6 +159,10 @@ A generated `.pbip` project contains:
   `.../visuals/*/visual.json`, bookmarks, theme in `RegisteredResources/`).
 - `.platform`, `definition.pbir`, `*.pbip` manifests.
 
+The final Migration Summary page reports counts, available lineage-contract
+status/counts and static project-check findings. It is a generation-time
+snapshot, not native refresh, rendered parity or deployment evidence.
+
 Assessment/QA/parity runs also write HTML + JSON reports to the output dir.
 
 ## Where things live (fix at the source, by domain)
@@ -193,9 +197,15 @@ Only the owning agent modifies each file; read access is universal. See
 
 ## Troubleshooting playbook
 
-- **"No DAX output" / measures show TODO/BLANK** → likely a converter/validator edge
-  case. Reproduce with `--verbose`, then fix in `dax_converter.py` or check
-  `dax_validator.py`. Never hand-patch the emitted `.tmdl` as the fix.
+- **"No DAX output" / measures show TODO/BLANK** → may be an intentional
+  source-evidence or declaration-conflict diagnostic. Inspect datasource identity,
+  retained declaration alternatives and explicit shelf evidence before attempting
+  repair. FIXED prioritizes exact proof; a bounded warned iterator requires
+  explicit consistent SUM/AVG/MIN/MAX evidence and resolved same-table physical
+  keys with a supported direct-column inner aggregate. Inferred SUM is not proof.
+  See the [FIXED policy](../../../docs/FAQ.md#how-are-lod-expressions-converted).
+  Reproduce with `--verbose`; fix the source generator when it is a defect,
+  never hand-patch emitted `.tmdl` as the permanent fix.
 - **Workbook won't parse** → run `--dry-run --verbose`; check for corrupt `.twbx`
   ZIP or unsupported Tableau version ([docs/TABLEAU_VERSION_COMPATIBILITY.md](../../../docs/TABLEAU_VERSION_COMPATIBILITY.md)).
 - **Visual loads blank in Desktop** → PBIR annotations must live at the visual.json

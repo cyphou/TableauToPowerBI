@@ -3,7 +3,7 @@
 
 # Service Abstraction — Full Code Examples
 
-> Complete examples for [service-abstraction.md](.github/agents/shared-references/service-abstraction.md). Read ONLY during Step 3 (Service Abstraction Layer).
+> Complete examples for [service-abstraction.md](../service-abstraction.md). Read ONLY during Step 3 (Service Abstraction Layer).
 
 ---
 
