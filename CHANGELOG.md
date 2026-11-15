@@ -4,6 +4,23 @@
 
 ## Unreleased
 
+- Add the embedded project logo and a clearer visual hierarchy to newly
+  generated PBIR Migration Summary pages, including thin and partial reports.
+  Missing logo files do not block project generation; native Desktop rendering
+  remains separately unverified.
+- Clarify that an opted-in Desktop diagnostic attempts Save only after a
+  verified refresh and post-render check; invocation does not prove persistence.
+- Diagnose Tableau scalar `DATEADD` calls with unsupported date parts instead of
+  silently treating them as month offsets; supported parts retain their
+  existing `EDATE` or scalar-arithmetic lowering.
+- Preserve the `DATEPARSE` format contract: lower year-only and year-first ISO
+  formats, and diagnose ambiguous, unsupported or missing formats instead of
+  relying on the model locale through `DATEVALUE`.
+- Reorder `DATEDIFF` only for supported literal intervals; diagnose unknown,
+  dynamic and incomplete calls, and keep `WEEK` diagnostic until week-start
+  semantics are verified.
+- Diagnose invalid Tableau `DATE`/`DATETIME` cast arities instead of emitting
+  malformed DAX; preserve the valid three-argument DAX `DATE` constructor.
 - Preserve quoted strings and identifiers during simple Tableau function-name
   mappings; keep nulls through optimized `REGEXP_MATCH` wildcard patterns; and
   correct generated `LTRIM`/`RTRIM` expressions to preserve the opposite edge
@@ -20,8 +37,9 @@
   partition column is available, instead of emitting a rank expression against
   a fabricated sort-column reference.
 - Diagnose `RUNNING_SUM/AVG/COUNT/MAX/MIN` when the active converter lacks a
-  resolved ordering column, rather than emitting an all-selected aggregate as
-  a running result.
+  proven mark row set, order/tie semantics, filter scope and totals; unambiguous
+  worksheet order metadata is now transported but is not treated as sufficient
+  evidence for a running result.
 - Diagnose `SIZE()` when verified mark grain and partition context are absent;
   retain the explicitly lossy constant `INDEX()` compatibility fallback rather
   than presenting it as a rank or row-number conversion.

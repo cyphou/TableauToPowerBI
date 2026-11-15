@@ -895,10 +895,9 @@ class TestBareRefSumTypeAware(unittest.TestCase):
 
 
 class TestDateparseFixBug4(unittest.TestCase):
-    """Bug 4 — DATEPARSE should return a date, not FORMAT(DATEVALUE(), fmt).
+    """DATEPARSE should preserve its parsing contract or fail closed.
 
-    The format string in DATEPARSE is a parsing hint for interpreting the
-    input string, not an output format.
+    Locale-sensitive or absent format strings cannot be silently discarded.
     """
 
     def test_dateparse_returns_datevalue(self):
@@ -908,10 +907,11 @@ class TestDateparseFixBug4(unittest.TestCase):
         self.assertIn('DATEVALUE', result)
         self.assertNotIn('FORMAT', result)
 
-    def test_dateparse_no_format_still_datevalue(self):
+    def test_dateparse_no_format_is_diagnostic(self):
         from tableau_export.dax_converter import convert_tableau_formula_to_dax
         result = convert_tableau_formula_to_dax('DATEPARSE([DateCol])')
-        self.assertIn('DATEVALUE', result)
+        self.assertIn('DATEPARSE requires exactly two arguments', result)
+        self.assertNotIn('DATEVALUE', result)
 
 
 class TestProperMigrationComment(unittest.TestCase):

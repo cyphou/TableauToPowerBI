@@ -484,7 +484,7 @@ validation do not establish native execution or source/target value parity.
 | INDEX | `1` compatibility fallback | Intentionally lossy; not Tableau index/rank semantics and not a `RANKX`/`ROWNUMBER` conversion |
 | SIZE | Diagnostic `TODO`/`BLANK()` | Requires verified mark grain and partition context; `compute_using` dimensions alone do not prove the row set |
 | RANK_PERCENTILE | `DIVIDE(RANKX()-1, COUNTROWS()-1)` | Edge cases with ties |
-| RUNNING_SUM/AVG/COUNT/MAX/MIN | Diagnostic `TODO`/`BLANK()` | The active converter receives addressing dimensions but no resolved ordering column; it does not invent a running window. RUNNING_COUNT over COUNTD also requires verified mark ordering and partitioning. |
+| RUNNING_SUM/AVG/COUNT/MAX/MIN | Diagnostic `TODO`/`BLANK()` | Unambiguous worksheet order metadata is transported, but it does not prove mark grain, unique ties, filter scope or total semantics; the converter does not invent a running window. RUNNING_COUNT over COUNTD also requires verified mark ordering and partitioning. |
 | WINDOW_SUM/AVG/MAX/MIN | `CALCULATE(inner, ALL/ALLEXCEPT)` with OFFSET-based frame boundaries | Frame start/end positions approximated via OFFSET for specific patterns |
 | WINDOW_PERCENTILE | Active converter emits diagnostic `TODO`/`BLANK()` | Mark grain, percentile context, and optional frame semantics are not verified; a standalone legacy helper is not used by the main path |
 | WINDOW_CORR/COVAR/COVARP | Unbounded two-expression calls use custom `VAR`/`SUMX` approximations; calls with frame bounds emit diagnostic `TODO`/`BLANK()` | Partition and frame semantics remain approximate or unsupported; no value parity is claimed |

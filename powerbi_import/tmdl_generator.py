@@ -2518,13 +2518,31 @@ def _collect_semantic_context(datasources, extra_objects):
     # Build compute_using_map from worksheet table_calcs for PARTITIONBY/ORDERBY
     # Maps calc field name → list of compute-using dimension names
     compute_using_map = {}
+    table_calc_context_map = {}
     for ws in extra_objects.get('worksheets', []):
         for tc in ws.get('table_calcs', []):
             tc_field = tc.get('field', '')
             cu = tc.get('compute_using', [])
             if tc_field and cu:
                 compute_using_map[tc_field] = cu
+            if tc_field:
+                context = {
+                    'worksheet_name': ws.get('name', ''),
+                    'compute_using': list(cu),
+                    'order_by': [
+                        {'field': order.get('field', ''),
+                         'direction': order.get('direction', '')}
+                        for order in tc.get('order_by', [])
+                    ],
+                    'ordering_type': tc.get('ordering_type', ''),
+                    'direction': tc.get('direction', ''),
+                    'at_level': tc.get('at_level', ''),
+                }
+                contexts = table_calc_context_map.setdefault(tc_field, [])
+                if context not in contexts:
+                    contexts.append(context)
     dax_context['compute_using_map'] = compute_using_map
+    dax_context['table_calc_context_map'] = table_calc_context_map
 
     # Build ds_main_table: datasource_name → table_name (table with most columns in that DS)
     ds_main_table = {}
@@ -4174,6 +4192,15 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         scalar_minmax_context = scalar_minmax_contexts.get(id(calc), {})
         if scalar_minmax_context:
             conversion_column_table_map = scalar_minmax_context['column_table_map']
+        matching_table_calc_contexts = []
+        for alias in (calc_name, caption):
+            for context in dax_context.get('table_calc_context_map', {}).get(alias, []):
+                if context not in matching_table_calc_contexts:
+                    matching_table_calc_contexts.append(context)
+        table_calc_context = (
+            matching_table_calc_contexts[0]
+            if len(matching_table_calc_contexts) == 1 else None
+        )
         dax_formula = 'BLANK()' if source_conflict_path else convert_tableau_formula_to_dax(
             formula,
             column_name=calc_name,
@@ -4188,6 +4215,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             partition_fields=calc.get('table_calc_partitioning'),
             compute_using=dax_context.get('compute_using_map', {}).get(calc_name)
                           or dax_context.get('compute_using_map', {}).get(caption),
+            table_calc_context=table_calc_context,
             table_columns=scalar_minmax_context.get('table_columns', _this_table_columns),
             bool_columns=_bool_table_columns,
             date_columns=_date_table_columns,

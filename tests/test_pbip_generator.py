@@ -728,10 +728,27 @@ class TestGenerateProject(unittest.TestCase):
             for root, _, filenames in os.walk(os.path.join(summary_dir, 'visuals'))
             for filename in filenames if filename == 'visual.json'
         ]
-        self.assertEqual(len(visual_files), 1)
-        with open(visual_files[0], encoding='utf-8') as stream:
-            visual = json.load(stream)['visual']
-        self.assertEqual(visual['visualType'], 'textbox')
+        visuals = []
+        for visual_file in visual_files:
+            with open(visual_file, encoding='utf-8') as stream:
+                visuals.append(json.load(stream))
+        textboxes = [item for item in visuals
+                     if item['visual']['visualType'] == 'textbox']
+        images = [item for item in visuals
+                  if item['visual']['visualType'] == 'image']
+        self.assertEqual(len(textboxes), 1)
+        self.assertEqual(len(images), 1)
+        logo = images[0]['visual']['objects']['general'][0]['properties']['imageUrl']
+        value = logo['expr']['Literal']['Value']
+        self.assertTrue(value.startswith("'data:image/png;base64,"))
+        import base64
+        self.assertTrue(base64.b64decode(value[len("'data:image/png;base64,"):-1]).startswith(
+            b'\x89PNG\r\n\x1a\n'))
+        self.assertLessEqual(
+            textboxes[0]['position']['x'] + textboxes[0]['position']['width'],
+            images[0]['position']['x'],
+        )
+        visual = textboxes[0]['visual']
         text = '\n'.join(
             ''.join(run.get('value', '') for run in paragraph.get('textRuns', [])
                     if isinstance(run.get('value'), str))
@@ -760,6 +777,27 @@ class TestGenerateProject(unittest.TestCase):
                 'Power BI Service refresh, source availability, and visual/value parity were not verified here.'):
             self.assertIn(expected, text)
 
+    def test_migration_summary_still_generated_when_logo_is_missing(self):
+        import builtins
+        from unittest import mock
+
+        original_open = builtins.open
+
+        def open_without_logo(path, *args, **kwargs):
+            if isinstance(path, str) and path.endswith('migration-logo.png'):
+                raise FileNotFoundError('logo unavailable')
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch('pbip_generator.open', side_effect=open_without_logo, create=True):
+            self._generate()
+        project_dir = os.path.join(self.output_dir, 'Test')
+        summary_path = os.path.join(
+            project_dir, self.gen._migration_summary_visual_relative_path)
+        with open(summary_path, encoding='utf-8') as stream:
+            summary = json.load(stream)
+        self.assertEqual(summary['visual']['visualType'], 'textbox')
+        self.assertTrue(os.path.isfile(os.path.join(project_dir, 'Test.pbip')))
+
     def test_migration_summary_status_can_be_updated_repeatedly(self):
         from types import SimpleNamespace
 
@@ -769,8 +807,9 @@ class TestGenerateProject(unittest.TestCase):
         with open(os.path.join(pages_dir, 'pages.json'), encoding='utf-8') as stream:
             summary_name = json.load(stream)['pageOrder'][-1]
         visuals_dir = os.path.join(pages_dir, summary_name, 'visuals')
-        visual_id, = os.listdir(visuals_dir)
-        visual_path = os.path.join(visuals_dir, visual_id, 'visual.json')
+        visual_path = os.path.join(
+            project_dir, self.gen._migration_summary_visual_relative_path)
+        self.assertEqual(os.path.dirname(os.path.dirname(visual_path)), visuals_dir)
 
         def summary_text():
             with open(visual_path, encoding='utf-8') as stream:

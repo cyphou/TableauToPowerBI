@@ -146,7 +146,8 @@ class TestDateparse(unittest.TestCase):
 
     def test_dateparse_no_format(self):
         result = _dax('DATEPARSE("", [Name])')
-        self.assertIn('DATEVALUE', result)
+        self.assertIn('supported locale-invariant format', result)
+        self.assertNotIn('DATEVALUE', result)
 
 
 class TestStringConcat(unittest.TestCase):

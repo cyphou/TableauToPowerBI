@@ -368,8 +368,10 @@ outputs from that invocation are captured. `--desktop-timeout`, `--refresh-timeo
 and `--page-timeout` accept finite positive seconds (defaults: 90, 300 and 30).
 Native options are not supported for Fabric, shared-model or inspection-only
 commands; dry-run never launches apps. Requested diagnostic failures return
-nonzero without deleting valid generated projects. No project save or
-credential/license acceptance is automated.
+nonzero without deleting valid generated projects. After a verified refresh
+and post-render check, the probe attempts Desktop Save on its owned window;
+the recorded invocation does not independently verify persistence. Credential
+and license acceptance are not automated.
 
 Windows PowerShell is resolved from its installed system location or `PATH`.
 If unavailable, native diagnostics report `tooling_unavailable` promptly rather

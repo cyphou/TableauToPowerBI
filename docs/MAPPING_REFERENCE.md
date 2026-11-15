@@ -212,8 +212,8 @@ Desktop rendering.
 | `DAY([Date])` | `DAY([Date])` | |
 | `QUARTER([Date])` | No rewrite | Use the supported `DATEPART('quarter', [Date])` form for scalar quarter extraction. |
 | `WEEK([Date])` | Diagnostic `TODO`/`BLANK()` | `DATEPART('week', [Date])` is also diagnostic until Tableau week-start and numbering semantics are verified; no `WEEKNUM` default is assumed. |
-| `DATEADD('month', -1, [Date])` | `DATEADD([Date], -1, MONTH)` | Different syntax |
-| `DATEDIFF('day', [Start], [End])` | `DATEDIFF([Start], [End], DAY)` | Different syntax |
+| `DATEADD('month', -1, [Date])` | `EDATE([Date], -1)` | Tableau's scalar form; supported parts use scalar DAX arithmetic, while unsupported parts remain diagnostic. Not DAX time-intelligence `DATEADD`. |
+| `DATEDIFF('day', [Start], [End])` | `DATEDIFF([Start], [End], DAY)` | Reorders supported literal intervals; unknown or dynamic intervals are diagnostic. `week` remains diagnostic until week-start semantics are verified. |
 | `TODAY()` | `TODAY()` | |
 | `NOW()` | `NOW()` | |
 | `MAKEDATE(2024, 1, 15)` | `DATE(2024, 1, 15)` | |

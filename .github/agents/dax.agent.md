@@ -47,7 +47,7 @@ You are the **DAX** agent for the Tableau to Power BI migration project. You are
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP |
 | Stats | MEDIAN, STDEV→STDEV.S, PERCENTILE→PERCENTILE.INC, CORR→CORREL |
 | LOD | FIXED uses exact verified scopes or shelf-derived annotated iterators over physical keys; unknown/ambiguous shelf evidence or physical bindings retain TODO/BLANK. INCLUDE→CALCULATE, EXCLUDE→REMOVEFILTERS |
-| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN are diagnostic TODO/BLANK without a resolved ordering column; RANK→RANKX(ALL()); supported WINDOW functions use CALCULATE/WINDOW patterns; WINDOW_PERCENTILE is diagnostic, and WINDOW_CORR/COVAR/P are unbounded-only approximations (explicit frame bounds are diagnostic) |
+| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN are diagnostic TODO/BLANK until mark grain, unique ordering, filters and totals are proven; RANK→RANKX(ALL()); supported WINDOW functions use CALCULATE/WINDOW patterns; WINDOW_PERCENTILE is diagnostic, and WINDOW_CORR/COVAR/P are unbounded-only approximations (explicit frame bounds are diagnostic) |
 | Iterator | SUM(IF(...))→SUMX, AVG(IF(...))→AVERAGEX |
 | Security | USERNAME()→USERPRINCIPALNAME(), ISMEMBEROF→RLS role |
 | Syntax | ==→=, ELSEIF→comma, + (strings)→&, or/and→\|\|/&& |

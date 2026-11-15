@@ -187,8 +187,10 @@ unopened unless `--screenshots` (alias `--desktop-probe`) or
 `--compare-desktop` is explicitly requested. Those PBIP batch options add native
 opening, verified Power BI refresh and captures after generation; `--all-pages`
 adds selected-tab verification. Preserve raw failures and current-output scope,
-close only owned launches, and never infer visual parity or automatic save,
-deployment, authentication or license acceptance from capture success.
+close only owned launches, and never infer visual parity, persisted save,
+deployment, authentication or license acceptance from capture success. A
+verified refresh may trigger an owned-window Save attempt; its invocation is
+not proof that the project persisted or reopened successfully.
 
 ## Standalone Prep Flow Batch Mode
 
@@ -264,14 +266,14 @@ calculations remain available; unknown ownership is not assigned by first match.
 |----------|---------|-----|
 | Null/Logic | ISNULL, ZN, IFNULL | ISBLANK, IF(ISBLANK) |
 | Text | CONTAINS, ASCII, LEN, LEFT, RIGHT, MID, UPPER, LOWER, REPLACE, TRIM | CONTAINSSTRING, UNICODE, LEN, LEFT, RIGHT, MID, UPPER, LOWER, SUBSTITUTE, TRIM |
-| Date | DATETRUNC, DATEPART, DATEDIFF, DATEADD, TODAY, NOW | STARTOF*, YEAR/MONTH/DAY/HOUR/MINUTE/SECOND, scalar quarter, DATEDIFF, DATEADD, TODAY, NOW; week/weekday remain diagnostic without verified week-start semantics |
+| Date | DATETRUNC, DATEPART, DATEDIFF, DATEADD, TODAY, NOW | STARTOF*, YEAR/MONTH/DAY/HOUR/MINUTE/SECOND, scalar quarter; DATEDIFF reorders only known literal intervals and diagnoses unknown/dynamic ones; scalar DATEADD supports mapped parts only; TODAY, NOW; week-related parts remain diagnostic without verified week-start semantics |
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP, SIN, COS, TAN | identical or mapped |
 | Stats | MEDIAN, STDEV, STDEVP, VAR, VARP, PERCENTILE, CORR, COVAR | MEDIAN, STDEV.S, STDEV.P, VAR.S, VAR.P, PERCENTILE.INC, CORREL, COVARIANCE.S |
-| Conversion | INT, FLOAT, STR, DATE, DATETIME | INT, CONVERT, FORMAT, DATE, DATE |
+| Conversion | INT, FLOAT, STR, DATE, DATETIME | INT, CONVERT, FORMAT; unary DATE/DATETIME use typed CONVERT expressions, unsupported arities diagnose, and the DAX DATE(year, month, day) constructor is preserved |
 | LOD | {FIXED dims : AGG} | Exact DAX with verified scope; otherwise a resolved SUM/AVG/MIN/MAX shelf can emit an annotated iterator over physical FIXED keys; unresolved cases retain TODO/BLANK |
 | LOD | {INCLUDE dims : AGG} | Annotated iterator only with explicit SUM/AVG/MIN/MAX shelf evidence and resolved same-table physical numeric keys/values; otherwise diagnostic TODO/BLANK |
 | LOD | {EXCLUDE dims : AGG} | Annotated CALCULATE(..., REMOVEFILTERS(...)) only for supported same-table physical numeric aggregates; cross-table keys and outer aggregates remain diagnostic |
-| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN | Diagnostic TODO/BLANK without a resolved ordering column |
+| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN | Diagnostic TODO/BLANK until mark grain, unique ordering, filters and totals are proven |
 | Table Calc | RANK, RANK_UNIQUE, RANK_DENSE | RANKX(ALL()) |
 | Table Calc | WINDOW_SUM/AVG/MAX/MIN | CALCULATE() |
 | Syntax | ==, or/and, ELSEIF, + (strings), multi-line IF | =, \|\|/&&, ,, &, condensed IF |

@@ -270,6 +270,41 @@ class TestGeneratePowerQueryM(unittest.TestCase):
                 )
                 self.assertNotIn("TODO: Configure the data source", result)
 
+    def test_registered_connector_aliases_generate_valid_m_through_public_api(self):
+        import m_query_builder as builder
+
+        details = {
+            "server": "host.invalid",
+            "database": "database",
+            "service": "service",
+            "warehouse": "warehouse",
+            "project": "project",
+            "dataset": "dataset",
+            "http_path": "/sql",
+            "catalog": "catalog",
+            "schema": "schema",
+            "filename": "synthetic.csv",
+            "dbname": "C:/synthetic/extract.hyper",
+            "account": "account",
+            "container": "container",
+            "site_url": "https://example.invalid/sites/public",
+            "spreadsheet_id": "PUBLIC_PLACEHOLDER",
+            "sheet_name": "Sheet1",
+        }
+        table = {
+            "name": "SyntheticTable",
+            "columns": self._make_columns(("Amount", "real")),
+        }
+
+        for alias, generator in builder._M_GENERATORS.items():
+            with self.subTest(alias=alias):
+                self.assertIs(builder._m_generator(alias), generator)
+                query = generate_power_query_m(
+                    {"type": alias, "details": details}, table,
+                )
+                self.assertNotIn("TODO: Configure the data source", query)
+                self.assertEqual(validate_m_query(query), [])
+
     def test_hyper_uses_dbname_when_filename_is_absent(self):
         from unittest import mock
 

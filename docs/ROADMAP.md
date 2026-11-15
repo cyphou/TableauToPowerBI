@@ -7,7 +7,63 @@ Fabric-native artifacts. Static local validation is the release gate. Semantic
 execution, refresh and deployment evidence remain `not_run` unless an
 authorized environment proves otherwise.
 
-## Current priorities — 2026-11-14
+## DAX and Power Query conversion roadmap — 2026-11-15
+
+### Outcome and guardrails
+
+The conversion path must classify each in-scope expression as **exact**,
+**approximated with a visible warning**, or **unsupported with a valid diagnostic**.
+It must not emit malformed DAX/M, leak an executable Tableau function, or guess
+row grain, mark ordering, filter scope, connector identity or refresh behavior.
+Static validation proves syntax/contracts only; it does not prove execution,
+source-to-target values or parity.
+
+Keep three conversion surfaces distinct:
+
+1. Tableau workbook calculations → DAX semantic-model expressions.
+2. Workbook data-source bindings and transformations → Power Query M.
+3. Tableau Prep flows → Power Query M. Prep dialect support remains separate and
+  partial under report #81; connector/M helper availability is not proof that
+  a Prep payload is parsed or equivalent.
+
+### Prioritized work
+
+| Priority | Work | Owner(s) | Acceptance gate |
+|---|---|---|---|
+| **P0 — Active conversion contract** | Inventory the live public path from extraction through DAX or M emission. For each active function/transform dispatch, record accepted arities/types, null behavior, output class (exact/approximate/diagnostic), and owner. Mark standalone legacy helpers separately; never count a helper-only test as active-path coverage. | DAX / Wiring / Extractor / Semantic / Tester | Every active entry has a positive case and a negative/unsupported control. Generated DAX/M is syntactically valid or explicitly diagnostic; unsupported Tableau tokens do not remain executable. Test the public conversion path as well as parser helpers. |
+| **P1 — DAX grain and table-calculation context** | **Metadata transport delivered:** an unambiguous worksheet context now carries addressing, partition, order-by field/direction and worksheet identity to the converter; conflicting contexts pass no selected context. Next, prove mark grain and semantic row set before supporting `RUNNING_SUM`; keep `RUNNING_AVG/COUNT/MAX/MIN`, `SIZE`, and `FIRST/LAST` diagnostic until each has a separate proven lowering. Keep `INDEX()` as an explicitly lossy constant compatibility fallback unless a real row identity/order is proven. | Extractor / Semantic / DAX / Tester | Producer-backed fixtures prove unique context reaches the public converter and conflicting contexts are withheld. Before any cumulative lowering, positive tests cover row grain, order/ties, partitions, filters and totals; negative controls omit or conflict on each. Any later function enablement requires its own positive and negative controls. No fabricated `__SortColumn__`, `ALLSELECTED(..., TRUE())` running result, or inferred sort. |
+| **P1 — DAX scalar semantics** | Complete behavior-based cases for date, text, regex, numeric, null and security functions: arity, quoting, blanks, locale-sensitive literals, and nested calls. Tableau scalar `DATEADD` lowers only its supported parts; unknown parts are diagnostic and must not default to a month shift. `DATEDIFF` reorders only known literal intervals and leaves week/dynamic intervals diagnostic until boundary semantics are verified. `DATEPARSE` lowers only year-only and year-first ISO formats; ambiguous or missing formats are diagnostic. Unary `DATE`/`DATETIME` casts are arity-checked while the DAX three-argument `DATE` constructor is preserved. Keep unsupported spatial, script and user-attribute functions diagnostic unless a separately verified mapping exists. | DAX / Tester / Evidence | Assertions check semantic shape and validator results, not only substring presence. Literals and identifiers containing function-shaped text remain unchanged. Every approximation states its boundary; runtime/value parity is a separate gate. |
+| **P1 — Workbook Power Query M** | Contract-test extraction → connection dispatch → generated M/TMDL binding, including exact field identity, types, nulls, escaping, source errors and transform ordering. Treat the `_M_GENERATORS` key/function counts as inventory, not independent connector certification. Keep DAX-to-M expression pushdown bounded to explicitly supported operators/functions. Static validation for multiline shared expressions in `expressions.tmdl` is already delivered; preserve it as a required gate and extend it only with failing examples. | Extractor / Wiring / Semantic / Tester | Each newly supported M shape has producer-backed input, positive and negative controls, identifier/type/error assertions and `m_validator` coverage for both partitions and shared expressions. Unsupported bindings remain visible; no empty-table fallback may masquerade as success. |
+| **P2 — Prep-to-M dialect coverage** | Continue report #81 separately: add only producer-observed Prep operation variants with explicit schema, execution order, null and type semantics. Do not generalize workbook M transformations into unsupported Prep dialects. | Extractor / Wiring / Tester | Producer-backed fixtures cover accepted variants; unsupported variants publish structured blockers and no successful-looking query. Native execution remains `not_run` without an authorized Power Query environment. |
+| **P2 — Native semantic evidence** | Execute representative DAX and M conversions only in an explicitly authorized local environment with accessible test data. Compare schema, rows, nulls, errors and values against source expectations, with a deliberately incorrect negative control. | Reviewer / Evidence / Deployer | Record engine/version, prerequisites, source and target context, refresh result and comparison evidence separately. If unavailable or unauthorized, status stays `not_run`; static tests never promote it to parity. |
+
+### Current baseline and next increment
+
+The active converter now fails closed for functions whose required semantics are
+not proven. Unambiguous table-calculation order metadata is transported, but it
+does not prove mark grain, unique ties, filter scope or total semantics; running
+calculations therefore remain diagnostic. Other examples include
+`SIZE()` without mark grain, `FIRST/LAST()` without ordering, every
+`WINDOW_PERCENTILE` call, and bounded correlation/covariance windows. `SPLIT` remains a guarded approximation:
+source values containing the reserved `|` separator return `BLANK()` when the
+delimiter differs. `INDEX()` remains a documented constant compatibility
+fallback, not a row-number conversion. User-attribute security functions and
+spatial/script DAX fallbacks require explicit mapping or separate PBIR/runtime
+evidence; they are not counted as fully converted. Scalar Tableau `DATEADD`
+supports the explicitly mapped parts only; unknown parts now retain a
+diagnostic instead of becoming `EDATE`.
+
+**Next implementation slice:** prove the mark row identity and row set for one
+producer-backed `RUNNING_SUM` case, including order uniqueness/ties, partition,
+filters and totals. Keep the formula diagnostic unless that proof is complete;
+the newly transported order context is necessary but insufficient. In parallel,
+build the P0 dispatch matrix for active workbook M generators and the DAX-to-M
+subset; do not merge the Prep #81 dialect into that matrix. Only after these
+focused gates pass
+should the unchanged full suite and the current corpus gate be rerun. The last
+recorded corpus result below remains failed; this roadmap does not change it.
+
+### Previous status snapshot — 2026-11-14
 
 ### Follow-up corrections — 2026-11-14
 

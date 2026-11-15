@@ -59,6 +59,9 @@ tableau-to-powerbi = "migrate:main"
 [tool.setuptools.packages.find]
 include = ["tableau_export*", "powerbi_import*"]
 
+[tool.setuptools.package-data]
+powerbi_import = ["migration-logo.png"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

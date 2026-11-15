@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import powerbi_import.tmdl_generator as tmdl_generator
 from powerbi_import.tmdl_generator import (
     _apply_hierarchies,
     _apply_semantic_enrichments,
@@ -763,6 +764,98 @@ class TestProcessSetsGroupsBins(unittest.TestCase):
 
 class TestCreateQuickTableCalcMeasures(unittest.TestCase):
     """Cover L2721-2816: table calculation measure generation."""
+
+    def test_running_sum_conversion_receives_worksheet_table_calc_context(self):
+        formula = 'RUNNING_SUM(SUM([Revenue]))'
+        datasources = [{'name': 'Sample', 'tables': [{
+            'name': 'Sales',
+            'columns': [
+                {'name': 'Revenue', 'datatype': 'real', 'role': 'measure'},
+                {'name': 'Region', 'datatype': 'string', 'role': 'dimension'},
+                {'name': 'Date', 'datatype': 'date', 'role': 'dimension'},
+            ],
+        }], 'calculations': [{
+            'name': '[Running Revenue]',
+            'caption': 'Running Revenue',
+            'formula': formula,
+            'datatype': 'real',
+            'role': 'measure',
+            'datasource_name': 'Sample',
+        }]}]
+        extra_objects = {'worksheets': [{
+            'name': 'Sheet',
+            'table_calcs': [{
+                'field': 'Running Revenue',
+                'compute_using': ['Region'],
+                'order_by': [{'field': 'Date', 'direction': 'DESC'}],
+                'ordering_type': 'Rows',
+                'direction': 'DESC',
+                'at_level': '',
+            }],
+        }]}
+
+        with tempfile.TemporaryDirectory() as output:
+            with patch.object(
+                    tmdl_generator, 'convert_tableau_formula_to_dax',
+                    wraps=tmdl_generator.convert_tableau_formula_to_dax) as converter:
+                generate_tmdl(datasources, 'Sample', extra_objects, output_dir=output)
+
+        matching_calls = [call for call in converter.call_args_list
+                          if call.args and call.args[0] == formula]
+        self.assertTrue(matching_calls, 'Expected the Running Revenue formula to be converted')
+        self.assertEqual(matching_calls[0].kwargs.get('table_calc_context'), {
+            'worksheet_name': 'Sheet',
+            'compute_using': ['Region'],
+            'order_by': [{'field': 'Date', 'direction': 'DESC'}],
+            'ordering_type': 'Rows',
+            'direction': 'DESC',
+            'at_level': '',
+        })
+
+    def test_conflicting_worksheet_table_calc_contexts_are_not_selected(self):
+        formula = 'RUNNING_SUM(SUM([Revenue]))'
+        datasources = [{'name': 'Sample', 'tables': [{
+            'name': 'Sales',
+            'columns': [
+                {'name': 'Revenue', 'datatype': 'real', 'role': 'measure'},
+                {'name': 'Region', 'datatype': 'string', 'role': 'dimension'},
+                {'name': 'Date', 'datatype': 'date', 'role': 'dimension'},
+            ],
+        }], 'calculations': [{
+            'name': '[Running Revenue]',
+            'caption': 'Running Revenue',
+            'formula': formula,
+            'datatype': 'real',
+            'role': 'measure',
+            'datasource_name': 'Sample',
+        }]}]
+        table_calc = {
+            'field': 'Running Revenue',
+            'compute_using': ['Region'],
+            'order_by': [{'field': 'Date', 'direction': 'ASC'}],
+            'ordering_type': 'Rows',
+            'direction': 'ASC',
+            'at_level': '',
+        }
+        extra_objects = {'worksheets': [
+            {'name': 'Ascending', 'table_calcs': [table_calc]},
+            {'name': 'Descending', 'table_calcs': [{
+                **table_calc,
+                'order_by': [{'field': 'Date', 'direction': 'DESC'}],
+                'direction': 'DESC',
+            }]},
+        ]}
+
+        with tempfile.TemporaryDirectory() as output:
+            with patch.object(
+                    tmdl_generator, 'convert_tableau_formula_to_dax',
+                    wraps=tmdl_generator.convert_tableau_formula_to_dax) as converter:
+                generate_tmdl(datasources, 'Sample', extra_objects, output_dir=output)
+
+        matching_calls = [call for call in converter.call_args_list
+                          if call.args and call.args[0] == formula]
+        self.assertTrue(matching_calls, 'Expected the Running Revenue formula to be converted')
+        self.assertIsNone(matching_calls[0].kwargs.get('table_calc_context'))
 
     def test_generate_tmdl_uses_pbip_worksheets_key(self):
         datasources = [{'name': 'Sample', 'tables': [{

@@ -502,7 +502,11 @@ class TestMixedWorkbookReportPages(unittest.TestCase):
                     buttons = [v for v in visuals
                                if v["visual"]["visualType"] == "actionButton"]
                     self.assertEqual(len(buttons), 1 if index == 0 else 0)
-                    if index >= 3:
+                    if page['displayName'] == 'Migration Summary':
+                        self.assertEqual(
+                            {item['visual']['visualType'] for item in visuals},
+                            {'textbox', 'image'})
+                    elif index >= 3:
                         self.assertEqual(len(visuals), 1)
                 action = self._visuals(pages_dir, pages[0]["name"])
                 button, = [v for v in action

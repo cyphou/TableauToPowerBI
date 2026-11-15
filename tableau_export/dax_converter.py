@@ -258,7 +258,8 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                                     fixed_shelf_aggregation=None,
                                     date_columns=None,
                                     lod_shelf_aggregation=None,
-                                    numeric_columns=None):
+                                    numeric_columns=None,
+                                    table_calc_context=None):
     """
     Converts a Tableau formula to DAX with context resolution.
 
@@ -296,6 +297,9 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         numeric_columns: Optional collection of local physical numeric columns
             proven by the semantic owner for bounded INCLUDE/EXCLUDE lowering
             and scalar MIN/MAX with a non-null numeric literal.
+        table_calc_context: Optional worksheet table-calculation context. Its
+            order_by metadata refines running-calculation diagnostics only; it
+            does not prove mark grain, unique ordering, tie behavior or totals.
 
     Returns:
         str: Valid DAX formula
@@ -553,7 +557,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                                    column_table_map=column_table_map)
 
     # 3g. RUNNING_SUM/AVG/COUNT/MAX/MIN → table calculations
-    dax = _convert_running_functions(dax, table_name)
+    dax = _convert_running_functions(dax, table_name, table_calc_context)
 
     # 3h. Percent of Total (TOTAL function or pcto: prefix)
     dax = _convert_total_function(dax, table_name)
@@ -2294,34 +2298,34 @@ def _convert_if_structure(text):
 # ── Phase 3 helpers ───────────────────────────────────────────────────────────
 
 def _convert_datediff(dax_str):
-    """DATEDIFF('interval', start, end) → DATEDIFF(start, end, INTERVAL)"""
-    pattern = r'\bDATEDIFF\s*\('
-    result = []
-    last_end = 0
-    for m_dd in re.finditer(pattern, dax_str, re.IGNORECASE):
-        pos = m_dd.end()
-        depth = 1
-        i = pos
-        while i < len(dax_str) and depth > 0:
-            if dax_str[i] == '(':
-                depth += 1
-            elif dax_str[i] == ')':
-                depth -= 1
-            i += 1
-        if depth != 0:
-            continue
-        inner = dax_str[pos:i - 1]
-        args = _split_args(inner)
-        if len(args) == 3:
-            interval = args[0].strip().strip("'\"").upper()
-            replacement = f"DATEDIFF({args[1]}, {args[2]}, {interval})"
-        else:
-            replacement = dax_str[m_dd.start():i]
-        result.append(dax_str[last_end:m_dd.start()])
-        result.append(replacement)
-        last_end = i
-    result.append(dax_str[last_end:])
-    return ''.join(result)
+    """Reorder Tableau DATEDIFF only for a known literal interval."""
+    supported_intervals = {
+        'YEAR', 'QUARTER', 'MONTH', 'DAY',
+        'HOUR', 'MINUTE', 'SECOND',
+    }
+
+    def convert(args, inner, restore):
+        if len(args) != 3:
+            return _unsupported_conversion(
+                'DATEDIFF requires exactly three arguments')
+        interval_arg = restore(args[0]).strip()
+        if (len(interval_arg) < 2
+                or interval_arg[0] not in ('"', "'")
+                or interval_arg[-1] != interval_arg[0]):
+            return _unsupported_conversion(
+                'DATEDIFF requires a supported literal interval')
+        interval = interval_arg[1:-1].upper()
+        if interval == 'WEEK':
+            return _unsupported_conversion(
+                'DATEDIFF week requires verified week-start semantics')
+        if interval not in supported_intervals:
+            return _unsupported_conversion(
+                'DATEDIFF requires a supported literal interval')
+        start = restore(args[1]).strip()
+        end = restore(args[2]).strip()
+        return f"DATEDIFF({start}, {end}, {interval})"
+
+    return _transform_date_func_call(dax_str, 'DATEDIFF', convert)
 
 
 def _convert_dateadd(dax_str):
@@ -2363,7 +2367,8 @@ def _convert_dateadd(dax_str):
             elif interval_unit == 'SECOND':
                 return f"({date_expr} + ({number}) / 86400)"
             else:
-                return f"EDATE({date_expr}, {number})"
+                return _unsupported_conversion(
+                    'DATEADD requires a supported date part')
         return f"DATEADD({inner})"
     return _transform_func_call(dax_str, 'DATEADD', _xf)
 
@@ -3019,13 +3024,12 @@ def _convert_rtrim(dax, value_column_ref='[Value]'):
 
 
 def _convert_index(dax):
-    """INDEX() → row number within partition.
+    """Replace INDEX() with a deliberately lossy compatibility constant.
 
-    Tableau INDEX() returns the sequential row number in the partition.
-    Power BI PBIP targets in this project cannot reliably materialize
-    ROWNUMBER() without explicit ORDERBY/PARTITIONBY context, which leads to
-    invalid measures in generated reports. Emit a stable compatibility fallback
-    instead so visuals remain loadable.
+    Tableau INDEX() returns the sequential row number in the mark partition.
+    The converter does not have a proven mark identity, partition and ordering
+    tuple here, so this constant must not be interpreted as converted index
+    semantics. Keep the limitation explicit in the emitted comment.
     """
     pattern = re.compile(r'\bINDEX\s*\(\s*\)', re.IGNORECASE)
     return pattern.sub(
@@ -3448,36 +3452,45 @@ def _convert_date_casts(dax):
     DATETIME retains the time component.
     """
     def date_cast(args, inner, restore):
+        if len(args) == 3:
+            return None
         if len(args) == 1 and args[0].strip():
             return f'CONVERT(INT(CONVERT({args[0]}, DATETIME)), DATETIME)'
-        return None
+        return _unsupported_conversion(
+            'DATE cast requires one argument; three arguments denote a DAX date constructor')
 
     def datetime_cast(args, inner, restore):
         if len(args) == 1 and args[0].strip():
             return f'CONVERT({args[0]}, DATETIME)'
-        return None
+        return _unsupported_conversion(
+            'DATETIME cast requires exactly one argument')
 
     dax = _transform_date_func_call(dax, 'DATE', date_cast)
     return _transform_date_func_call(dax, 'DATETIME', datetime_cast)
 
 
 def _convert_dateparse(dax):
-    """DATEPARSE(format, string) → a typed date.
+    """Convert only DATEPARSE formats with locale-invariant semantics.
 
-    Tableau's format arg tells *how to parse* the input string — it is a
-    parsing hint, NOT an output format.  DAX DATEVALUE() returns a date
-    value, which is what downstream date arithmetic expects.  Using FORMAT()
-    would return a string, breaking any date calculations.  A year-only
-    pattern must construct January 1 explicitly rather than rely on the
-    locale-dependent interpretation of a bare year by DATEVALUE.
+    The format is a parsing contract, not an output format. Dropping an
+    ambiguous day/month pattern and calling DATEVALUE would silently delegate
+    parsing to the model locale. Keep only the year-only and year-first forms
+    with an explicit mapping; diagnose other formats rather than guessing.
     """
     def _xf(args, inner, restore):
-        if len(args) >= 2:
-            expr = args[1].strip()
-            if restore(args[0]).strip() in ('"yyyy"', "'yyyy'"):
-                return f'DATE(VALUE({expr}), 1, 1)'
+        if len(args) != 2:
+            return _unsupported_conversion(
+                'DATEPARSE requires exactly two arguments')
+        format_token = restore(args[0]).strip()
+        expr = restore(args[1]).strip()
+        if format_token in ('"yyyy"', "'yyyy'"):
+            return f'DATE(VALUE({expr}), 1, 1)'
+        if format_token in (
+                '"yyyy-MM-dd"', "'yyyy-MM-dd'",
+                '"%Y-%m-%d"', "'%Y-%m-%d'"):
             return f'DATEVALUE({expr})'
-        return f'DATEVALUE({inner})'
+        return _unsupported_conversion(
+            'DATEPARSE requires a supported locale-invariant format')
     return _transform_date_func_call(dax, 'DATEPARSE', _xf)
 
 
@@ -4792,8 +4805,8 @@ def _convert_rank_functions(dax, table_name, compute_using=None, column_table_ma
     return dax
 
 
-def _convert_running_functions(dax, table_name):
-    """Diagnose running table calculations when order and partition are unknown."""
+def _convert_running_functions(dax, table_name, table_calc_context=None):
+    """Fail closed on running table calculations with context-aware diagnostics."""
     for tab_func in (
             'RUNNING_SUM', 'RUNNING_AVG', 'RUNNING_COUNT',
             'RUNNING_MAX', 'RUNNING_MIN'):
@@ -4809,8 +4822,16 @@ def _convert_running_functions(dax, table_name):
                     f"/* TODO: {tab_func} of COUNTD requires Tableau mark ordering "
                     "plus partitioning */ BLANK()"
                 )
+            if table_calc_context is None:
+                return _unsupported_conversion(
+                    'running table calculation requires verified ordering and partition context')
+            if isinstance(table_calc_context, dict) and table_calc_context.get('order_by'):
+                return _unsupported_conversion(
+                    'running table calculation requires verification of mark grain, '
+                    'unique ordering, tie behavior, partitioning and totals')
             return _unsupported_conversion(
-                'running table calculation requires verified ordering and partition context')
+                'running table calculation requires a resolved order; mark grain, '
+                'partitioning and totals also require verification')
 
         dax = _transform_date_func_call(dax, tab_func, convert)
     return dax

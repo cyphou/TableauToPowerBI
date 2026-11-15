@@ -5,6 +5,7 @@ This module automatically creates the complete structure of a Power BI Project,
 including all the files needed to open the project in Power BI Desktop.
 """
 
+import base64
 import copy
 import json
 import logging
@@ -2101,7 +2102,7 @@ class PowerBIProjectGenerator:
 
     def _create_migration_summary_page(self, pages_dir, page_names,
                                        converted_objects, report_name, project_dir):
-        """Append a text-only migration summary with generated artifact counts."""
+        """Append a branded migration summary with generated artifact counts."""
         is_french = str(getattr(self, '_culture', '') or '').lower().startswith('fr')
         display_name = 'Bilan de migration' if is_french else 'Migration Summary'
         page_name = f'ReportSection{uuid.uuid4().hex[:6]}'
@@ -2239,7 +2240,9 @@ class PowerBIProjectGenerator:
                     'were not verified here.')
 
         text_runs = [
-            {'text': title + '\n', 'bold': True, 'font_size': 26, 'color': '#004B87'},
+            {'text': 'TABLEAU  /  POWER BI\n', 'bold': True, 'font_size': 11,
+             'color': '#007F80'},
+            {'text': title + '\n', 'bold': True, 'font_size': 28, 'color': '#004B87'},
             {'text': generation_status + '\n', 'bold': True, 'font_size': 20,
              'color': '#107C10' if not (partial_generation or has_join_omissions)
              else '#9A6700'},
@@ -2326,11 +2329,24 @@ class PowerBIProjectGenerator:
         try:
             visual_path = self._create_visual_textbox(
                 visuals_dir,
-                {'position': {'x': 40, 'y': 32, 'w': 1200, 'h': 640},
+                {'position': {'x': 48, 'y': 40, 'w': 1000, 'h': 640},
                  'text_runs': text_runs},
                 1, 1, 0,
                 annotations=[_MIGRATION_SUMMARY_ANNOTATION],
             )
+            logo_path = os.path.join(os.path.dirname(__file__), 'migration-logo.png')
+            try:
+                with open(logo_path, 'rb') as logo_file:
+                    logo = 'data:image/png;base64,' + base64.b64encode(logo_file.read()).decode('ascii')
+            except OSError as exc:
+                logger.warning('Migration summary logo unavailable: %s', exc)
+            else:
+                self._create_visual_image(
+                    visuals_dir,
+                    {'position': {'x': 1120, 'y': 40, 'w': 104, 'h': 104},
+                     'source': logo},
+                    1, 1, 1,
+                )
         finally:
             if old_width is None:
                 self.__dict__.pop('_current_page_width', None)

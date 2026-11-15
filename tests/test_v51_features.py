@@ -159,22 +159,22 @@ class TestWindowCorrCovar(unittest.TestCase):
 
 
 class TestDateparseConversion(unittest.TestCase):
-    """DATEPARSE(format, string) → DATEVALUE(string) (format is a parsing hint)."""
+    """DATEPARSE only lowers formats with locale-invariant mappings."""
 
     def test_dateparse_with_format(self):
         result = convert_tableau_formula_to_dax('DATEPARSE("yyyy-MM-dd", [DateStr])')
         self.assertIn('DATEVALUE', result)
         self.assertNotIn('FORMAT', result)
 
-    def test_dateparse_discards_format(self):
-        """Format string is a parsing hint — should NOT appear in DAX output."""
+    def test_dateparse_ambiguous_format_is_diagnostic(self):
         result = convert_tableau_formula_to_dax('DATEPARSE("dd/MM/yyyy", [Col])')
-        self.assertNotIn('dd/MM/yyyy', result)
-        self.assertIn('DATEVALUE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertNotIn('DATEVALUE', result)
 
     def test_dateparse_no_format(self):
         result = convert_tableau_formula_to_dax('DATEPARSE([DateCol])')
-        self.assertIn('DATEVALUE', result)
+        self.assertIn('DATEPARSE requires exactly two arguments', result)
+        self.assertNotIn('DATEVALUE', result)
 
 
 class TestAtan2Conversion(unittest.TestCase):

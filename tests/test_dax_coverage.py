@@ -188,7 +188,8 @@ class TestDateNameParseFunctions(unittest.TestCase):
 
     def test_dateparse_single_arg_fallback(self):
         result = convert_tableau_formula_to_dax("DATEPARSE([DateStr])")
-        self.assertIn("DATEVALUE", result)
+        self.assertIn("DATEPARSE requires exactly two arguments", result)
+        self.assertNotIn("DATEVALUE", result)
 
     def test_isdate(self):
         result = convert_tableau_formula_to_dax("ISDATE([DateStr])")

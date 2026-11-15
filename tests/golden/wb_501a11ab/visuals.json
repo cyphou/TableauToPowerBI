@@ -1,5 +1,5 @@
 {
- "visual_count": 7,
+ "visual_count": 8,
  "visuals": [
   {
    "fields": 3,
@@ -69,14 +69,27 @@
   {
    "fields": 0,
    "has_format": true,
+   "height": 104,
+   "page": "Migration Summary",
+   "title_font": "",
+   "title_size": "",
+   "type": "image",
+   "width": 104,
+   "x": 1120,
+   "y": 40,
+   "z": 1000
+  },
+  {
+   "fields": 0,
+   "has_format": true,
    "height": 640,
    "page": "Migration Summary",
    "title_font": "",
    "title_size": "",
    "type": "textbox",
-   "width": 1200,
-   "x": 40,
-   "y": 32,
+   "width": 1000,
+   "x": 48,
+   "y": 40,
    "z": 0
   },
   {

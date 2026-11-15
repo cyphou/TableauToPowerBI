@@ -54,9 +54,11 @@ Data/                              # Unchanged packaged Excel copies and/or Hype
 
 ## Migration Summary Page
 
-Generated PBIR reports, including thin reports, append a text-only **Migration
-Summary** page. With a French culture it is named **Bilan de migration**. It
-shows generation status and counts for data sources, model tables, extracted
+Generated PBIR reports, including thin reports, append a **Migration Summary**
+page with the project logo embedded as an image. With a French culture it is
+named **Bilan de migration**. If the logo resource is unavailable, the summary
+is still generated without it. It shows generation status and counts for data
+sources, model tables, extracted
 calculations, generated measures, report pages and visuals. When
 `lineage_map.json` is available, it also shows the lineage contract status,
 resolved and unresolved record counts, and counts by tables, columns,
@@ -74,7 +76,9 @@ may not reflect the final gate result; check `openability_report.json` and the
 migration logs. The page is a generation-time snapshot: it does not update when
 the report is published or refreshed, and does not prove Service refresh,
 source availability, or visual and value parity. Review the separate quality
-and openability reports and validate those aspects independently.
+and openability reports and validate those aspects independently. The new
+presentation applies to newly generated projects; it does not modify existing
+PBIPs. Its native Desktop rendering requires separate verification.
 
 ## 🚀 Opening a Power BI Project
 

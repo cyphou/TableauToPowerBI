@@ -237,7 +237,9 @@ class TestSalvageBatchCLI(SalvageFixture):
         summary_page = next(path.parent for path in
                             self.project.glob('*.Report/definition/pages/*/page.json')
                             if _read_json(path)['displayName'] == 'Migration Summary')
-        summary = _read_json(next(summary_page.glob('visuals/*/visual.json')))['visual']
+        summary = next(_read_json(path)['visual'] for path in
+                   summary_page.glob('visuals/*/visual.json')
+                   if _read_json(path)['visual']['visualType'] == 'textbox')
         paragraphs = summary['objects']['general'][0]['properties']['paragraphs']
         text = '\n'.join(''.join(run.get('value', '') for run in paragraph['textRuns'])
                          for paragraph in paragraphs)
@@ -359,7 +361,9 @@ class TestSalvageBatchCLI(SalvageFixture):
         summary_page = next(path.parent for path in
                     self.project.glob('*.Report/definition/pages/*/page.json')
                     if _read_json(path)['displayName'] == 'Migration Summary')
-        summary = _read_json(next(summary_page.glob('visuals/*/visual.json')))['visual']
+        summary = next(_read_json(path)['visual'] for path in
+                   summary_page.glob('visuals/*/visual.json')
+                   if _read_json(path)['visual']['visualType'] == 'textbox')
         paragraphs = summary['objects']['general'][0]['properties']['paragraphs']
         text = '\n'.join(''.join(run.get('value', '') for run in paragraph['textRuns'])
                  for paragraph in paragraphs)
@@ -371,7 +375,7 @@ class TestSalvageBatchCLI(SalvageFixture):
         self.assertTrue(visuals)
         for path in visuals:
             visual = _read_json(path)['visual']
-            self.assertEqual(visual['visualType'], 'textbox')
+            self.assertIn(visual['visualType'], ('textbox', 'image'))
             self.assertNotIn('query', visual)
         from powerbi_import.openability import check_openability
         static_report = check_openability(str(self.project))

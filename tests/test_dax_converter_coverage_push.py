@@ -262,8 +262,8 @@ class TestDatediffFallback(unittest.TestCase):
 
     def test_datediff_2_args_fallback(self):
         result = _convert_datediff("DATEDIFF([A], [B])")
-        self.assertIn('DATEDIFF', result)
-        self.assertIn('[A]', result)
+        self.assertIn('DATEDIFF requires exactly three arguments', result)
+        self.assertNotIn('DATEDIFF(', result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -404,11 +404,13 @@ class TestDateParseIsdateAttr(unittest.TestCase):
 
     def test_dateparse_empty_format(self):
         result = _convert_dateparse("DATEPARSE('', [DateStr])")
-        self.assertIn('DATEVALUE', result)
+        self.assertIn('supported locale-invariant format', result)
+        self.assertNotIn('DATEVALUE', result)
 
     def test_dateparse_single_arg(self):
         result = _convert_dateparse("DATEPARSE([DateStr])")
-        self.assertIn('DATEVALUE', result)
+        self.assertIn('exactly two arguments', result)
+        self.assertNotIn('DATEVALUE', result)
 
     def test_isdate(self):
         result = _convert_isdate("ISDATE([X])")

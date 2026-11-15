@@ -168,7 +168,7 @@ nested LOD are outside that fallback. See the
   - Aggregations: `COUNTA`, `COUNTD` → `DISTINCTCOUNT`, `SUM(IF)` → `SUMX`
   - LOD INCLUDE: `{INCLUDE [channel] : AVG([deal_value])}` → `CALCULATE(AVERAGE)`
   - Window: `WINDOW_MAX`, `WINDOW_MIN` → `CALCULATE(MAX/MIN, ALL)`
-  - Table calc source: `RUNNING_COUNT` (active DAX conversion is diagnostic until an ordering column is resolved)
+  - Table calc source: `RUNNING_COUNT` (active DAX conversion remains diagnostic until mark grain, unique ordering, filters and totals are proven)
   - Type: `INT`, `STR` → `FORMAT`
 - ✅ Column aliases (Email → Email Marketing, SEM → Search Engine Marketing, etc.)
 - ✅ Sort orders (lead_status manual funnel sort, channel ascending)

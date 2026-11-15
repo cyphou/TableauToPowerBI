@@ -120,8 +120,10 @@ and `--page-timeout` for finite positive time budgets; defaults are 90, 300
 and 30 seconds. `--screen-comparison local` requires `--compare-desktop` and
 adds only local PNG pixel metrics, never semantic or visual parity.
 An initial window capture is not a verified page identity. Capture success
-requires verified Power BI refresh, not just existing rows. No automatic
-Desktop save, credential/license acceptance or deployment is performed.
+requires verified Power BI refresh, not just existing rows. After a verified
+refresh and post-render check, the probe attempts Desktop Save on its owned
+window; invocation does not prove persistence. Credential/license acceptance
+and deployment are not automated.
 
 Use `quality` for one deterministic report combining assessment, feature parity,
 data coverage, interface coverage, and Power BI openability. Use `parity` for the

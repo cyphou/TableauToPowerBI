@@ -1,6 +1,19 @@
 {
- "visual_count": 5,
+ "visual_count": 6,
  "visuals": [
+  {
+   "fields": 0,
+   "has_format": true,
+   "height": 104,
+   "page": "Migration Summary",
+   "title_font": "",
+   "title_size": "",
+   "type": "image",
+   "width": 104,
+   "x": 1120,
+   "y": 40,
+   "z": 1000
+  },
   {
    "fields": 0,
    "has_format": true,
@@ -9,9 +22,9 @@
    "title_font": "",
    "title_size": "",
    "type": "textbox",
-   "width": 1200,
-   "x": 40,
-   "y": 32,
+   "width": 1000,
+   "x": 48,
+   "y": 40,
    "z": 0
   },
   {

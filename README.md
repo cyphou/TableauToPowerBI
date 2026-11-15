@@ -190,8 +190,8 @@ python migrate.py batch .\workbooks --output-dir .\output --compare-desktop --al
 > interactive Windows session and installed applications. Static QA and native
 > evidence remain separate; see the [one-command workflow](docs/DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command).
 
-Generated PBIR reports, including thin reports, end with a **Migration Summary**
-page showing migration counts, available lineage-contract status/counts, and
+Newly generated PBIR reports, including thin reports, end with a branded
+**Migration Summary** page showing migration counts, available lineage-contract status/counts, and
 static project-check findings. This page is
 a generation-time snapshot, not proof of Service refresh or Tableau-to-Power BI
 parity. See the [summary page guide](docs/POWERBI_PROJECT_GUIDE.md#migration-summary-page)
@@ -968,8 +968,8 @@ SharedSales/
 | Text | `UPPER`, `LOWER`, `REPLACE`, `TRIM` | `UPPER`, `LOWER`, `SUBSTITUTE`, `TRIM` |
 | Agg | `COUNTD([col])` | `DISTINCTCOUNTNOBLANK([col])` with empty-table handling |
 | Agg | `AVG([col])` | `AVERAGE([col])` |
-| Date | `DATETRUNC`, `DATEPART`, `DATEDIFF` | `STARTOF*`, `YEAR/MONTH/DAY/HOUR/MINUTE/SECOND`, scalar quarter; week/weekday remain diagnostic without verified week-start semantics |
-| Date | `DATEADD`, `TODAY`, `NOW` | `DATEADD`, `TODAY`, `NOW` |
+| Date | `DATETRUNC`, `DATEPART`, `DATEDIFF` | `STARTOF*`, `YEAR/MONTH/DAY/HOUR/MINUTE/SECOND`, scalar quarter; DATEDIFF reorders supported literal intervals only; week/weekday remain diagnostic without verified week-start semantics |
+| Date | `DATEADD`, `TODAY`, `NOW` | `EDATE` / scalar date arithmetic for supported `DATEADD` parts; unsupported parts are diagnostic; `TODAY`, `NOW` |
 | Math | `ABS`, `CEILING`, `FLOOR`, `ROUND` | Identical or mapped |
 | Stats | `MEDIAN`, `STDEV`, `STDEVP` | `MEDIAN`, `STDEV.S`, `STDEV.P` |
 | Stats | `VAR`, `VARP`, `PERCENTILE`, `CORR` | `VAR.S`, `VAR.P`, `PERCENTILE.INC`, `CORREL` |
@@ -980,7 +980,7 @@ SharedSales/
 | LOD | `{FIXED [dim] : AGG}` | Exact DAX with proven scope; otherwise a bounded, warned shelf iterator or diagnostic `TODO`/`BLANK()` |
 | LOD | `{INCLUDE [dim] : AGG}` | `CALCULATE(AGG)` |
 | LOD | `{EXCLUDE [dim] : AGG}` | `CALCULATE(AGG, REMOVEFILTERS)` |
-| Table Calc | `RUNNING_SUM / AVG / COUNT / MAX / MIN` | Diagnostic `TODO`/`BLANK()` without a resolved ordering column |
+| Table Calc | `RUNNING_SUM / AVG / COUNT / MAX / MIN` | Diagnostic `TODO`/`BLANK()` until mark grain, unique ordering, filters and totals are proven |
 | Table Calc | `RANK`, `RANK_UNIQUE`, `RANK_DENSE` | `RANKX(ALL())` |
 | Table Calc | `WINDOW_SUM / AVG / MAX / MIN` | `CALCULATE()` |
 | Iterator | `SUM(IF(...))` | `SUMX('table', IF(...))` |

@@ -498,7 +498,7 @@ Most complex patterns **are** handled automatically:
 - `SUM(IF ...)` → `SUMX('table', IF(...))` iterator conversion
 - Nested `IF/ELSEIF/ELSE/END` → nested `IF()` calls
 - Window functions (`WINDOW_AVG`, `WINDOW_SUM`) → `CALCULATE(..., ALL('table'))`
-- `RUNNING_SUM/AVG/COUNT/MAX/MIN` → diagnostic `TODO`/`BLANK()` because the current converter does not receive a resolved ordering column. `RANK` uses `RANKX(ALL(...))`.
+- `RUNNING_SUM/AVG/COUNT/MAX/MIN` → diagnostic `TODO`/`BLANK()`. Unambiguous worksheet order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven. `RANK` uses `RANKX(ALL(...))`.
 
 ### How are LOD expressions converted?
 
@@ -827,8 +827,10 @@ Windows session and installed apps. Default captures show opening windows;
 `--all-pages` attempts individual pages and requires selection checks before
 and after capture. Failed/inaccessible pages remain explicit, with no parity
 claim. Only current successful/resumed workbook outputs are captured, and only
-applications launched by the diagnostic are closed. There is no automatic
-Desktop save, credential/license acceptance or deployment.
+applications launched by the diagnostic are closed. After a verified refresh
+and post-render check, the probe attempts Desktop Save on its owned window;
+an invoked command does not prove persistence. Credential/license acceptance
+and deployment are not automated.
 See the [one-command guide](DEPLOYMENT_GUIDE.md#migration-and-native-diagnostics-in-one-command)
 for timeouts, executable overrides and evidence locations.
 

@@ -92,10 +92,10 @@ physical bindings. Existing LOD and source-grain proof requirements still apply.
 
 | # | Tableau | DAX | Status | Notes |
 |---|---------|-----|--------|-------|
-| 1 | `DATEADD(date_part, interval, date)` | `DATEADD(date_column, interval, DAY/MONTH/...)` | ✅ | |
-| 2 | `DATEDIFF(date_part, start, end)` | `DATEDIFF(start, end, INTERVAL)` | ✅ | Args reordered |
+| 1 | `DATEADD(date_part, interval, date)` | `EDATE` or scalar date arithmetic | ✅/🔧 | Month/year/quarter use `EDATE`; day/week/hour/minute/second use scalar arithmetic. Unsupported date parts remain diagnostic; this is not DAX time-intelligence `DATEADD`. |
+| 2 | `DATEDIFF(date_part, start, end)` | `DATEDIFF(start, end, INTERVAL)` | ✅/🔧 | Reorders supported literal `YEAR`/`QUARTER`/`MONTH`/`DAY`/`HOUR`/`MINUTE`/`SECOND`; unknown or dynamic intervals are diagnostic. `WEEK` remains diagnostic until week-start semantics are verified. |
 | 3 | `DATENAME(date_part, date)` | `FORMAT` by supported part | ✅/🔧 | `year` → `"YYYY"`, `quarter` → `"Q"`, `month` → `"MMMM"`, `day` → `"D"`, `weekday/dayofweek` → `"DDDD"`; hour/minute/second use null-guarded numeric `FORMAT`. Unsupported parts or arities produce diagnostic `TODO`/`BLANK()`. |
-| 4 | `DATEPARSE(format, string)` | `DATEVALUE(string)` | ✅ | Format arg dropped |
+| 4 | `DATEPARSE(format, string)` | `DATEVALUE` for `yyyy-MM-dd` / `%Y-%m-%d`; `DATE` for `yyyy` | ✅/🔧 | Other, ambiguous or missing formats remain diagnostic; the format is never silently discarded. |
 | 5 | `DATEPART('year', date)` | `YEAR(date)` | ✅ | |
 | 6 | `DATEPART('quarter', date)` | `IF(ISBLANK(date), BLANK(), INT((MONTH(date) - 1) / 3) + 1)` | ✅ | Null-preserving scalar quarter |
 | 7 | `DATEPART('month', date)` | `MONTH(date)` | ✅ | |
@@ -122,8 +122,8 @@ physical bindings. Existing LOD and source-grain proof requirements still apply.
 
 | # | Tableau | DAX | Status | Notes |
 |---|---------|-----|--------|-------|
-| 1 | `DATE(expression)` | `DATE(expression)` | ✅ | |
-| 2 | `DATETIME(expression)` | `DATE(expression)` | ✅ | |
+| 1 | `DATE(expression)` | `CONVERT(INT(CONVERT(expression, DATETIME)), DATETIME)` | ✅/🔧 | Tableau's one-argument cast is distinguished from the valid three-argument DAX `DATE(year, month, day)` constructor; unsupported arities are diagnostic. |
+| 2 | `DATETIME(expression)` | `CONVERT(expression, DATETIME)` | ✅/🔧 | Requires exactly one argument; unsupported arities are diagnostic. |
 | 3 | `FLOAT(expression)` | `CONVERT(expression, DOUBLE)` | ✅ | |
 | 4 | `INT(expression)` | `INT(expression)` | ✅ | |
 | 5 | `STR(expression)` | `FORMAT(expression, "0")` | ✅ | |
@@ -214,11 +214,11 @@ When an aggregate wraps an expression (not a single column), the converter auto-
 | 8 | `RANK_MODIFIED(expr)` | `RANKX(ALL('Table'), expr)` + comment | ⚠️ | Competition ranking — verify |
 | 9 | `RANK_PERCENTILE(expr)` | `DIVIDE(RANKX-1, COUNTROWS-1)` | ⚠️ | Approximate percentile rank |
 | 10 | `RANK_UNIQUE(expr)` | `RANKX(ALL('Table'), expr)` | ✅ | |
-| 11 | `RUNNING_AVG(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | No resolved ordering column is passed to the active converter |
-| 12 | `RUNNING_COUNT(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | No resolved ordering column is passed; COUNTD also needs verified mark ordering and partitioning |
-| 13 | `RUNNING_MAX(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | No resolved ordering column is passed to the active converter |
-| 14 | `RUNNING_MIN(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | No resolved ordering column is passed to the active converter |
-| 15 | `RUNNING_SUM(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | No resolved ordering column is passed to the active converter |
+| 11 | `RUNNING_AVG(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven |
+| 12 | `RUNNING_COUNT(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Mark grain and order semantics are unproven; COUNTD also needs verified mark ordering and partitioning |
+| 13 | `RUNNING_MAX(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven |
+| 14 | `RUNNING_MIN(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven |
+| 15 | `RUNNING_SUM(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven |
 | 16 | `SIZE()` | Diagnostic `TODO`/`BLANK()` | 🔧 | Requires verified mark grain and partition context; addressing dimensions alone do not establish the row set |
 | 17 | `TOTAL(expr)` | `CALCULATE(expr)` | ✅ | |
 | 18 | `WINDOW_AVG(expr)` | `CALCULATE(expr, ALL('Table'))` | ✅ | |

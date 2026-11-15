@@ -802,6 +802,29 @@ class TestCountdNullSemantics(unittest.TestCase):
                 self.assertIn('BLANK()', result)
                 self.assertNotIn('DISTINCTCOUNTNOBLANK', result)
 
+    def test_running_sum_order_metadata_does_not_prove_mark_grain(self):
+        result = convert_tableau_formula_to_dax(
+            'RUNNING_SUM(SUM([Sales]))',
+            table_name='Fact',
+            column_table_map={'Sales': 'Fact'},
+            compute_using=['Region'],
+            table_calc_context={
+                'worksheet_name': 'Sheet',
+                'compute_using': ['Region'],
+                'order_by': [{'field': 'Date', 'direction': 'ASC'}],
+                'ordering_type': 'Rows',
+                'direction': 'ASC',
+                'at_level': '',
+            },
+        )
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertIn('mark grain', result)
+        self.assertIn('unique ordering', result)
+        self.assertNotIn('CALCULATE', result)
+        self.assertNotIn('ALLSELECTED', result)
+        self.assertNotIn('__SortColumn__', result)
+
     def test_countd_text_inside_running_formula_is_not_treated_as_a_call(self):
         result = convert_tableau_formula_to_dax(
             'RUNNING_SUM(IF [Caption] = "COUNTD(example)" THEN 1 ELSE 0 END)',
@@ -1376,9 +1399,18 @@ class TestDateNameParseFunctions(unittest.TestCase):
         self.assertEqual(result, "DATEVALUE('Table'[DateStr])")
         self.assertNotIn("DATEPARSE", result)
 
-    def test_dateparse_single_argument_fallback_returns_string(self):
+    def test_dateparse_ambiguous_format_is_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            'DATEPARSE("dd/MM/yyyy", [DateStr])')
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("locale-invariant format", result)
+        self.assertNotIn("DATEVALUE", result)
+        self.assertNotIn("DATEPARSE(", result)
+
+    def test_dateparse_single_argument_is_diagnostic(self):
         result = convert_tableau_formula_to_dax("DATEPARSE([DateStr])")
-        self.assertIsInstance(result, str)
+        self.assertIn("DATEPARSE requires exactly two arguments", result)
+        self.assertNotIn("DATEVALUE", result)
 
 
 class TestDateFunctions(unittest.TestCase):
@@ -1401,6 +1433,36 @@ class TestDateFunctions(unittest.TestCase):
         result = convert_tableau_formula_to_dax("DATEADD('month', 3, [OrderDate])")
         self.assertIn("EDATE", result)
         self.assertNotIn("DATEADD", result)
+
+    def test_date_casts_with_invalid_arity_are_diagnostic(self):
+        for formula in (
+                "DATE([Date], [Extra])",
+                "DATETIME([Date], [Extra])"):
+            with self.subTest(formula=formula):
+                result = convert_tableau_formula_to_dax(formula)
+                self.assertIn("TODO: DAX conversion validation failed", result)
+                self.assertNotIn("DATE(", result)
+                self.assertNotIn("DATETIME(", result)
+
+    def test_three_argument_date_constructor_is_preserved(self):
+        self.assertEqual(
+            convert_tableau_formula_to_dax("DATE(2024, 1, 15)"),
+            "DATE(2024, 1, 15)",
+        )
+
+    def test_dateadd_unknown_date_part_is_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "DATEADD('millisecond', 1, [OrderDate])"
+        )
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("supported date part", result)
+        self.assertNotIn("EDATE", result)
+        self.assertNotIn("DATEADD(", result)
+        from powerbi_import.dax_validator import validate_dax_expression
+        self.assertEqual(
+            validate_dax_expression(result),
+            ["unsupported DAX conversion placeholder"],
+        )
 
     def test_date_literal(self):
         result = convert_tableau_formula_to_dax("#2024-01-15#")

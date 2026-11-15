@@ -173,16 +173,39 @@ class TestTableCalcEdgeCases(unittest.TestCase):
 class TestDateConverterEdgeCases(unittest.TestCase):
     """DATEDIFF with all interval types, DATENAME, DATEPARSE."""
 
+    def test_datediff_unknown_or_dynamic_interval_is_diagnostic(self):
+        for interval in ('"fortnight"', '[Unit]'):
+            with self.subTest(interval=interval):
+                result = convert_tableau_formula_to_dax(
+                    f'DATEDIFF({interval}, [Start], [End])')
+                self.assertIn('TODO: DAX conversion validation failed', result)
+                self.assertIn('supported literal interval', result)
+                self.assertNotIn('DATEDIFF(', result)
+                from powerbi_import.dax_validator import validate_dax_expression
+                self.assertEqual(
+                    validate_dax_expression(result),
+                    ['unsupported DAX conversion placeholder'],
+                )
+
     def test_datediff_second(self):
-        result = convert_tableau_formula_to_dax('DATEDIFF([Start], [End], "second")')
-        self.assertIn('DATEDIFF', result)
-        # Interval arg is preserved as a string literal
-        self.assertIn('second', result.lower())
+        result = convert_tableau_formula_to_dax('DATEDIFF("second", [Start], [End])')
+        self.assertEqual(
+            result, "DATEDIFF('Table'[Start], 'Table'[End], SECOND)")
 
     def test_datediff_quarter(self):
-        result = convert_tableau_formula_to_dax('DATEDIFF([Start], [End], "quarter")')
-        self.assertIn('DATEDIFF', result)
-        self.assertIn('quarter', result.lower())
+        result = convert_tableau_formula_to_dax('DATEDIFF("quarter", [Start], [End])')
+        self.assertEqual(
+            result, "DATEDIFF('Table'[Start], 'Table'[End], QUARTER)")
+
+    def test_datediff_week_is_diagnostic_without_week_start_policy(self):
+        result = convert_tableau_formula_to_dax(
+            'DATEDIFF("week", [Start], [End])')
+        self.assertIn('verified week-start semantics', result)
+        self.assertNotIn('DATEDIFF(', result)
+
+    def test_datediff_call_shaped_text_is_preserved(self):
+        formula = '"DATEDIFF(""fortnight"", [Start], [End])"'
+        self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
 
     def test_datename_hour(self):
         result = convert_tableau_formula_to_dax('DATENAME("hour", [DateTime])')
@@ -191,7 +214,8 @@ class TestDateConverterEdgeCases(unittest.TestCase):
 
     def test_dateparse_us_format(self):
         result = convert_tableau_formula_to_dax('DATEPARSE("MM/dd/yyyy", [DateStr])')
-        self.assertNotIn('DATEPARSE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertNotIn('DATEVALUE', result)
 
 
 class TestStringConverterEdgeCases(unittest.TestCase):
