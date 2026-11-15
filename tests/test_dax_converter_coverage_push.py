@@ -275,11 +275,11 @@ class TestFindArgReorder(unittest.TestCase):
 
     def test_find_args_swapped(self):
         result = _convert_find("FIND([Name], 'Smith')")
-        self.assertIn('FIND', result)
-        # After swap, 'Smith' comes first
-        idx_smith = result.index("'Smith'")
-        idx_name = result.index('[Name]')
-        self.assertLess(idx_smith, idx_name)
+        self.assertEqual(result, "FIND('Smith', [Name], 1, 0)")
+
+    def test_find_explicit_start_preserved(self):
+        result = _convert_find("FIND([Name], 'Smith', 3)")
+        self.assertEqual(result, "FIND('Smith', [Name], 3, 0)")
 
     def test_find_single_arg_unchanged(self):
         result = _convert_find("FIND([X])")
@@ -889,9 +889,9 @@ class TestLODExpressionsAdvanced(unittest.TestCase):
             'Orders',
             {'Region': 'Geo', 'Sales': 'Orders'}
         )
-        self.assertIn('CALCULATE', result)
-        self.assertIn('ALLEXCEPT', result)
-        self.assertIn("'Geo'[Region]", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('ALLEXCEPT', result.upper())
 
     def test_fixed_no_dims(self):
         result = _convert_lod_expressions(
@@ -899,8 +899,8 @@ class TestLODExpressionsAdvanced(unittest.TestCase):
             'Orders',
             {'Sales': 'Orders'}
         )
-        self.assertIn('CALCULATE', result)
-        self.assertIn("ALL('Orders')", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_include(self):
         result = _convert_lod_expressions(
@@ -908,8 +908,8 @@ class TestLODExpressionsAdvanced(unittest.TestCase):
             'Orders',
             {'State': 'Geo', 'Profit': 'Orders'}
         )
-        self.assertIn('CALCULATE', result)
-        self.assertNotIn('ALLEXCEPT', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_exclude(self):
         result = _convert_lod_expressions(
@@ -917,8 +917,8 @@ class TestLODExpressionsAdvanced(unittest.TestCase):
             'Sales',
             {'Product': 'Products', 'Orders': 'Sales'}
         )
-        self.assertIn('CALCULATE', result)
-        self.assertIn('REMOVEFILTERS', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_exclude_no_dims(self):
         result = _convert_lod_expressions(
@@ -926,7 +926,8 @@ class TestLODExpressionsAdvanced(unittest.TestCase):
             'T',
             {}
         )
-        self.assertIn('CALCULATE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_nested_lod(self):
         result = _convert_lod_expressions(
@@ -934,9 +935,8 @@ class TestLODExpressionsAdvanced(unittest.TestCase):
             'Orders',
             {'Region': 'Geo', 'State': 'Geo', 'Sales': 'Orders'}
         )
-        # Inner INCLUDE processed first, then FIXED wraps it
-        self.assertIn('CALCULATE', result)
-        self.assertIn('ALLEXCEPT', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_agg_calculate_cleanup(self):
         # Aggregating a FIXED result needs verified shelf and total grain.
@@ -954,8 +954,9 @@ class TestLODExpressionsAdvanced(unittest.TestCase):
             table_name='Fact',
             column_table_map={'Region': 'Dim', 'Sales': 'Fact'}
         )
-        self.assertIn('CALCULATE', result)
-        self.assertIn('ALLEXCEPT', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('ALLEXCEPT', result.upper())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

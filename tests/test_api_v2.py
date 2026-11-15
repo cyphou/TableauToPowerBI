@@ -60,6 +60,7 @@ class TestOpenApiSpec(unittest.TestCase):
         batch = _build_openapi_spec()['paths']['/migrate/batch']['post']
         schema = batch['requestBody']['content']['multipart/form-data']['schema']
         self.assertEqual(schema['properties']['file']['format'], 'binary')
+        self.assertIn('429', batch['responses'])
 
     def test_openapi_jobs_has_pagination_params(self):
         from powerbi_import.api_server import _build_openapi_spec

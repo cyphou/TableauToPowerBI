@@ -496,6 +496,30 @@ class TestCheckMigrationScope(unittest.TestCase):
         # Should be at least Medium with all that complexity
         self.assertTrue('Medium' in details or 'High' in details or 'Very High' in details)
 
+    def test_rank_field_name_does_not_raise_complexity(self):
+        ext = _empty_extracted()
+        ext['calculations'] = [
+            {'name': f'Calc{i}', 'formula': 'SUM([Rank])'} for i in range(11)
+        ]
+
+        cat = _check_migration_scope(ext)
+        complexity_check = next(c for c in cat.checks if c.name == 'Complexity score')
+
+        self.assertEqual(complexity_check.severity, INFO)
+        self.assertEqual(complexity_check.detail, 'Complexity score: 11 (Low).')
+
+    def test_rank_function_raises_complexity(self):
+        ext = _empty_extracted()
+        ext['calculations'] = [
+            {'name': f'Calc{i}', 'formula': 'RANK(SUM([Sales]))'} for i in range(7)
+        ]
+
+        cat = _check_migration_scope(ext)
+        complexity_check = next(c for c in cat.checks if c.name == 'Complexity score')
+
+        self.assertEqual(complexity_check.severity, INFO)
+        self.assertEqual(complexity_check.detail, 'Complexity score: 21 (Medium).')
+
     def test_object_inventory(self):
         ext = _simple_extracted()
         cat = _check_migration_scope(ext)

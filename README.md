@@ -968,7 +968,7 @@ SharedSales/
 | Text | `UPPER`, `LOWER`, `REPLACE`, `TRIM` | `UPPER`, `LOWER`, `SUBSTITUTE`, `TRIM` |
 | Agg | `COUNTD([col])` | `DISTINCTCOUNTNOBLANK([col])` with empty-table handling |
 | Agg | `AVG([col])` | `AVERAGE([col])` |
-| Date | `DATETRUNC`, `DATEPART`, `DATEDIFF` | `STARTOF*`, `YEAR/MONTH/DAY/etc`, `DATEDIFF` |
+| Date | `DATETRUNC`, `DATEPART`, `DATEDIFF` | `STARTOF*`, `YEAR/MONTH/DAY/HOUR/MINUTE/SECOND`, scalar quarter; week/weekday remain diagnostic without verified week-start semantics |
 | Date | `DATEADD`, `TODAY`, `NOW` | `DATEADD`, `TODAY`, `NOW` |
 | Math | `ABS`, `CEILING`, `FLOOR`, `ROUND` | Identical or mapped |
 | Stats | `MEDIAN`, `STDEV`, `STDEVP` | `MEDIAN`, `STDEV.S`, `STDEV.P` |
@@ -1385,7 +1385,7 @@ use the review checklist before any publishing step.
 | 📝 [Changelog](CHANGELOG.md) | Change notes |
 | 🏢 [Enterprise Guide](docs/ENTERPRISE_GUIDE.md) | 8-phase enterprise migration guide |
 | 📈 [Roadmap](docs/ROADMAP.md) | Development roadmap |
-| 🤖 [Agents](docs/AGENTS.md) | 17-agent specialization model |
+| 🤖 [Agents](docs/AGENTS.md) | 17 implementation agents + cross-layer formula analyst |
 | 🌐 Global Assessment | Cross-workbook merge analysis with HTML heatmap (`--global-assess`) |
 | 🚀 Bundle Deployment | Deploy shared model + reports to Fabric (`--deploy-bundle`) |
 

@@ -495,17 +495,18 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 'mn': 'Date.Month', 'tmn': 'Date.StartOfMonth',
                 'dy': 'Date.Day',
                 'qr': 'Date.QuarterOfYear', 'tqr': 'Date.StartOfQuarter',
-                'wk': 'Date.WeekOfYear',
                 'hr': 'Time.Hour', 'mt': 'Time.Minute', 'sc': 'Time.Second',
             }
             # These derivations are date/time operations, but do not have a
             # supported equivalent in the mapping above. Failing closed is
             # preferable to serializing the untouched timestamp as text.
-            _UNSUPPORTED_DATE_PART_PREFIXES = {'md', 'mdy', 'hms', 'thr', 'trunc', 'tdy', 'twk'}
+            _UNSUPPORTED_DATE_PART_PREFIXES = {
+                'md', 'mdy', 'hms', 'thr', 'trunc', 'tdy', 'twk', 'wk',
+            }
             # Also map function names from group name (e.g. YEAR, MONTH)
             _FUNC_NAME_M = {
                 'YEAR': 'Date.Year', 'MONTH': 'Date.Month', 'DAY': 'Date.Day',
-                'QUARTER': 'Date.QuarterOfYear', 'WEEK': 'Date.WeekOfYear',
+                'QUARTER': 'Date.QuarterOfYear',
                 'HOUR': 'Time.Hour', 'MINUTE': 'Time.Minute', 'SECOND': 'Time.Second',
             }
             # Parse group name to extract function wrappers per position
@@ -531,6 +532,10 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                 _gn_parts.append(''.join(_gn_cur).strip())
                 for _gp in _gn_parts:
                     _fm = re.match(r'^(YEAR|MONTH|DAY|QUARTER|WEEK|HOUR|MINUTE|SECOND)\(', _gp, re.IGNORECASE)
+                    if _fm and _fm.group(1).upper() == 'WEEK':
+                        raise ValueError(
+                            f"Combined group {group_name!r}: WEEK() is unsupported because "
+                            "week-start/numbering semantics are unverified")
                     name_func_map.append(_FUNC_NAME_M.get(_fm.group(1).upper()) if _fm else None)
 
             m_parts = []
@@ -553,8 +558,7 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
             date_dax_funcs = {
                 'Date.Year': 'YEAR', 'Date.Month': 'MONTH',
                 'Date.Day': 'DAY', 'Date.QuarterOfYear': 'QUARTER',
-                'Date.WeekOfYear': 'WEEKNUM', 'Time.Hour': 'HOUR',
-                'Time.Minute': 'MINUTE', 'Time.Second': 'SECOND',
+                'Time.Hour': 'HOUR', 'Time.Minute': 'MINUTE', 'Time.Second': 'SECOND',
             }
             all_m_available = True
             for idx, sf_raw in enumerate(source_refs):
@@ -565,6 +569,10 @@ def _process_sets_groups_bins(model, extra_objects, main_table_name, column_tabl
                         f"table-calculation derivation {sf_raw!r}")
                 prefix_match = _RE_DERIVATION_PREFIX.match(sf_raw)
                 date_prefix = prefix_match.group(1) if prefix_match else None
+                if date_prefix == 'wk':
+                    raise ValueError(
+                        f"Combined group {group_name!r}: week-start/numbering semantics "
+                        "are unverified for the 'wk:' date-part derivation prefix")
                 if date_prefix in _UNSUPPORTED_DATE_PART_PREFIXES:
                     raise ValueError(
                         f"Combined group '{group_name}' uses unsupported "

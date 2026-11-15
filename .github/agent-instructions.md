@@ -2,7 +2,7 @@
 
 Rules for AI coding agents working in this codebase. Read `.github/copilot-instructions.md` for full project context (architecture, file map, DAX/M/PBIR specs, visual mappings).
 
-**Multi-agent architecture**: This project uses a 17-agent implementation specialization model, plus `@roadmap-planner` and `@readme` governance agents. See `docs/AGENTS.md` for the full architecture diagram, and `.github/agents/` for per-agent definitions.
+**Multi-agent architecture**: This project uses a 17-agent implementation specialization model, plus `@tableau-formula-analyst` for cross-layer formula diagnosis without source-file ownership, and `@roadmap-planner` / `@readme` for planning and documentation governance. See `docs/AGENTS.md` for the full architecture diagram, and `.github/agents/` for per-agent definitions.
 
 ---
 
@@ -14,7 +14,7 @@ Rules for AI coding agents working in this codebase. Read `.github/copilot-instr
 - **Tests**: use `python -m pytest` on the relevant files first; see CI for current suite outcomes and `docs/ROADMAP.md` for dated historical evidence
 - **Python**: 3.12+ stdlib only — **no external dependencies** for core migration
 - **Roadmap**: `docs/ROADMAP.md` — check current sprint before starting work
-- **Agents**: 17 implementation agents plus planning and documentation governance agents in `.github/agents/` — see `docs/AGENTS.md`
+- **Agents**: 17 implementation agents plus the formula analyst and governance agents in `.github/agents/` — see `docs/AGENTS.md`
 - **Local browser**: `.\run_web_ui.ps1` or `python web\local_server.py`; loopback-only folder-path UI, not the optional upload UI/API
 - **Generation**: `python migrate.py batch FOLDER`; one-workbook folders are valid, shared models use `merge`, and direct single-file generation is retired
 - **Evidence**: batch/shared-model generation does not run the preceptor; Desktop refresh/rendering and deployment remain separate authorized checks

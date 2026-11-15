@@ -210,8 +210,8 @@ Desktop rendering.
 | `YEAR([Date])` | `YEAR([Date])` | |
 | `MONTH([Date])` | `MONTH([Date])` | |
 | `DAY([Date])` | `DAY([Date])` | |
-| `QUARTER([Date])` | `QUARTER([Date])` | |
-| `WEEK([Date])` | `WEEKNUM([Date])` | |
+| `QUARTER([Date])` | No rewrite | Use the supported `DATEPART('quarter', [Date])` form for scalar quarter extraction. |
+| `WEEK([Date])` | Diagnostic `TODO`/`BLANK()` | `DATEPART('week', [Date])` is also diagnostic until Tableau week-start and numbering semantics are verified; no `WEEKNUM` default is assumed. |
 | `DATEADD('month', -1, [Date])` | `DATEADD([Date], -1, MONTH)` | Different syntax |
 | `DATEDIFF('day', [Start], [End])` | `DATEDIFF([Start], [End], DAY)` | Different syntax |
 | `TODAY()` | `TODAY()` | |

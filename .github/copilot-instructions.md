@@ -264,13 +264,13 @@ calculations remain available; unknown ownership is not assigned by first match.
 |----------|---------|-----|
 | Null/Logic | ISNULL, ZN, IFNULL | ISBLANK, IF(ISBLANK) |
 | Text | CONTAINS, ASCII, LEN, LEFT, RIGHT, MID, UPPER, LOWER, REPLACE, TRIM | CONTAINSSTRING, UNICODE, LEN, LEFT, RIGHT, MID, UPPER, LOWER, SUBSTITUTE, TRIM |
-| Date | DATETRUNC, DATEPART, DATEDIFF, DATEADD, TODAY, NOW | STARTOF*, YEAR/MONTH/DAY/etc, DATEDIFF, DATEADD, TODAY, NOW |
+| Date | DATETRUNC, DATEPART, DATEDIFF, DATEADD, TODAY, NOW | STARTOF*, YEAR/MONTH/DAY/HOUR/MINUTE/SECOND, scalar quarter, DATEDIFF, DATEADD, TODAY, NOW; week/weekday remain diagnostic without verified week-start semantics |
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP, SIN, COS, TAN | identical or mapped |
 | Stats | MEDIAN, STDEV, STDEVP, VAR, VARP, PERCENTILE, CORR, COVAR | MEDIAN, STDEV.S, STDEV.P, VAR.S, VAR.P, PERCENTILE.INC, CORREL, COVARIANCE.S |
 | Conversion | INT, FLOAT, STR, DATE, DATETIME | INT, CONVERT, FORMAT, DATE, DATE |
 | LOD | {FIXED dims : AGG} | Exact DAX with verified scope; otherwise a resolved SUM/AVG/MIN/MAX shelf can emit an annotated iterator over physical FIXED keys; unresolved cases retain TODO/BLANK |
-| LOD | {INCLUDE dims : AGG} | CALCULATE(AGG) |
-| LOD | {EXCLUDE dims : AGG} | CALCULATE(AGG, REMOVEFILTERS) |
+| LOD | {INCLUDE dims : AGG} | Annotated iterator only with explicit SUM/AVG/MIN/MAX shelf evidence and resolved same-table physical numeric keys/values; otherwise diagnostic TODO/BLANK |
+| LOD | {EXCLUDE dims : AGG} | Annotated CALCULATE(..., REMOVEFILTERS(...)) only for supported same-table physical numeric aggregates; cross-table keys and outer aggregates remain diagnostic |
 | Table Calc | RUNNING_SUM/AVG/COUNT | CALCULATE(SUM/AVERAGE/COUNT) |
 | Table Calc | RANK, RANK_UNIQUE, RANK_DENSE | RANKX(ALL()) |
 | Table Calc | WINDOW_SUM/AVG/MAX/MIN | CALCULATE() |
@@ -469,6 +469,16 @@ Power BI Desktop openability.
   datasources. An extractor's inferred/default SUM is not shelf evidence. A
   generated formula is not native execution or value-parity proof.
 
+  ### INCLUDE / EXCLUDE Migration Policy
+
+  INCLUDE requires explicit consistent SUM/AVG/MIN/MAX shelf evidence and
+  same-table physical numeric columns; it emits an annotated iterator over all
+  included keys. EXCLUDE may emit an annotated REMOVEFILTERS expression only
+  for same-table physical keys and supported numeric aggregates. Neither path
+  claims source-filter or grand-total equivalence. Missing, ambiguous,
+  calculated, cross-table, nested, or unsupported grain evidence remains a
+  diagnostic TODO/BLANK; do not lower these guards to improve migration counts.
+
 ## Best Practices
 
 - Open the .pbip in Power BI Desktop to validate
@@ -476,9 +486,9 @@ Power BI Desktop openability.
 - Compare Tableau visuals vs Power BI
 - Refer to `docs/FAQ.md` for frequently asked questions
 
-## Agent Architecture — 17-Agent Specialization Model
+## Agent Architecture — 17 Implementers + Formula Analyst
 
-This project uses a **17-agent specialization model** with scoped domain knowledge and file ownership. Specialist agents (@dax, @wiring, @semantic, @visual) provide deep conversion expertise; @healing, @evidence, @fabric, and @ai own the self-repair, quality-evidence, Fabric-native, and agent-facing surfaces; @tableau handles Tableau Server/Cloud interaction; @web-designer owns the end-user UI surfaces.
+This project has **17 implementation specialists** with scoped file ownership, plus the cross-layer `@tableau-formula-analyst`, which diagnoses formula migration anomalies and proposes owner-aligned fixes without owning source files. Specialist agents (@dax, @wiring, @semantic, @visual) provide deep conversion expertise; @healing, @evidence, @fabric, and @ai own the self-repair, quality-evidence, Fabric-native, and agent-facing surfaces; @tableau handles Tableau Server/Cloud interaction; @web-designer owns the end-user UI surfaces.
 
 See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff protocol.
 
@@ -490,6 +500,7 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 | **@extractor** | Tableau XML parsing (.twb/.twbx), Hyper files, Prep flow conversion | `extract_tableau_data.py`, `datasource_extractor.py`, `hyper_reader.py`, `pulse_extractor.py`, `prep_flow_parser.py` |
 | **@tableau** | Tableau Server/Cloud REST API, JWT auth, site discovery, permissions, metadata lineage, Prep flow analysis | `server_client.py`, `prep_flow_analyzer.py` |
 | **@dax** | DAX formula correctness, conversion, optimization, aggregation context | `dax_converter.py`, `dax_optimizer.py`, `tmdl_dax_postprocess.py` |
+| **@tableau-formula-analyst** | Cross-layer formula triage, dependencies, row grain, LOD, MAKEPOINT, and evidence-backed development proposals | No source-file ownership; hands implementation to the owning specialist |
 | **@wiring** | DAX↔M bridge, classification, M generation, M step injection | `m_query_builder.py`, `calc_column_utils.py`, `tmdl_m_conversion.py` |
 | **@semantic** | TMDL model, relationships, Calendar, RLS, hierarchies, parameters | `tmdl_generator.py` (structural) |
 | **@visual** | PBIR v4.0, visual containers, slicers, filters, bookmarks, themes | `pbip_generator.py`, `visual_generator.py` |
@@ -520,4 +531,4 @@ See `docs/AGENTS.md` for the full architecture diagram, data flow, and handoff p
 
 All agent files live in `.github/agents/`:
 - `shared.instructions.md` — base rules all agents inherit
-- `{name}.agent.md` — per-agent definitions (19 tracked files: ai, assessor, dax, deployer, evidence, extractor, fabric, healing, merger, orchestrator, readme, reviewer, roadmap-planner, semantic, tableau, tester, visual, web-designer, wiring)
+- `{name}.agent.md` — per-agent definitions (20 tracked files: ai, assessor, dax, deployer, evidence, extractor, fabric, healing, merger, orchestrator, readme, reviewer, roadmap-planner, semantic, tableau, tableau-formula-analyst, tester, visual, web-designer, wiring)

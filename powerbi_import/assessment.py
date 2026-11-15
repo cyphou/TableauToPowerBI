@@ -88,7 +88,7 @@ _SCRIPT_FUNCTIONS = re.compile(
     re.IGNORECASE,
 )
 
-_NUMBER_ARG = re.compile(r'\s*[-+]?\d+(?:\.\d+)?\s*')
+_NUMBER_ARG = re.compile(r'\s*[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*')
 
 
 def _is_constant_point_only(formula: str) -> bool:
@@ -99,27 +99,27 @@ def _is_constant_point_only(formula: str) -> bool:
     numbers. A point built from columns is a real per-row grain the model
     cannot hold, so that case stays blocking.
     """
-    matches = list(_UNSUPPORTED_FUNCTIONS.finditer(formula))
-    if not matches:
+    masked_formula = _mask_tableau_non_code(formula)
+    matches = list(_UNSUPPORTED_FUNCTIONS.finditer(masked_formula))
+    if len(matches) != 1:
         return False
-    for match in matches:
-        if match.group(1).upper() != 'MAKEPOINT':
-            return False
-        depth, start = 1, match.end()
-        index = start
-        while index < len(formula) and depth:
-            if formula[index] == '(':
-                depth += 1
-            elif formula[index] == ')':
-                depth -= 1
-            index += 1
-        if depth:
-            return False
-        args = formula[start:index - 1].split(',')
-        if len(args) not in (2, 3) or not all(
-                _NUMBER_ARG.fullmatch(a) for a in args):
-            return False
-    return True
+    match = matches[0]
+    if match.group(1).upper() != 'MAKEPOINT':
+        return False
+    depth, start = 1, match.end()
+    index = start
+    while index < len(masked_formula) and depth:
+        if masked_formula[index] == '(':
+            depth += 1
+        elif masked_formula[index] == ')':
+            depth -= 1
+        index += 1
+    if depth or masked_formula[:match.start()].strip() or masked_formula[index:].strip():
+        return False
+    args = masked_formula[start:index - 1].split(',')
+    return len(args) in (2, 3) and all(
+        _NUMBER_ARG.fullmatch(arg) for arg in args
+    )
 
 _PARTIAL_FUNCTIONS = re.compile(
     r'\b('
@@ -155,6 +155,14 @@ _TABLEAU_NON_CODE = re.compile(
 _FIXED_LOD_PATTERN = re.compile(r'\{\s*FIXED(?=\s|:|\[)', re.IGNORECASE)
 
 
+def _mask_tableau_non_code(formula: str) -> str:
+    """Mask comments, string literals, and field refs without shifting offsets."""
+    def mask(match: re.Match) -> str:
+        return "".join(char if char in "\r\n" else " " for char in match.group())
+
+    return _TABLEAU_NON_CODE.sub(mask, formula)
+
+
 def _contains_fixed_lod(formula: str) -> bool:
     """Detect explicit FIXED syntax, without asserting semantic correctness."""
     if "FIXED" not in formula.upper():
@@ -172,7 +180,8 @@ _TABLE_CALC_PATTERN = re.compile(
     r'\b(RUNNING_SUM|RUNNING_AVG|RUNNING_COUNT|RUNNING_MAX|RUNNING_MIN'
     r'|WINDOW_SUM|WINDOW_AVG|WINDOW_MAX|WINDOW_MIN|WINDOW_COUNT'
     r'|WINDOW_MEDIAN|WINDOW_STDEV|WINDOW_STDEVP|WINDOW_VAR|WINDOW_VARP'
-    r'|WINDOW_PERCENTILE)\s*\(',
+    r'|WINDOW_PERCENTILE|RANK|RANK_UNIQUE|RANK_DENSE|RANK_MODIFIED'
+    r'|RANK_PERCENTILE|INDEX)\s*\(',
     re.IGNORECASE,
 )
 
@@ -559,26 +568,27 @@ def _check_calculations(extracted: Dict) -> CategoryResult:
 
     for calc in calculations:
         formula = calc.get("formula") or ""
+        code = _mask_tableau_non_code(formula)
         name = calc.get("caption", calc.get("name", "?"))
 
         if _is_constant_point_only(formula):
             constant_points.append(name)
-        elif _UNSUPPORTED_FUNCTIONS.search(formula):
+        elif _UNSUPPORTED_FUNCTIONS.search(code):
             unsupported.append(name)
-        if _SCRIPT_FUNCTIONS.search(formula):
+        if _SCRIPT_FUNCTIONS.search(code):
             script_calcs.append(name)
-        partial_match = _PARTIAL_FUNCTIONS.search(formula)
+        partial_match = _PARTIAL_FUNCTIONS.search(code)
         if partial_match and not (
             partial_match.group(1).upper().startswith('RAWSQL_')
             and _SUPPORTED_RAWSQL.fullmatch(formula.strip())
         ):
             partial.append(name)
         has_fixed = _contains_fixed_lod(formula)
-        if _LOD_PATTERN.search(formula) or has_fixed:
+        if _LOD_PATTERN.search(code) or has_fixed:
             lod_calcs.append(name)
         if has_fixed:
             fixed_calcs.append(name)
-        if _TABLE_CALC_PATTERN.search(formula):
+        if _TABLE_CALC_PATTERN.search(code):
             table_calcs.append(name)
 
     # Results
@@ -1138,13 +1148,14 @@ def _check_migration_scope(extracted: Dict) -> CategoryResult:
     # Count unsupported features for weighting
     for calc in calculations:
         formula = calc.get("formula") or ""
-        if _UNSUPPORTED_FUNCTIONS.search(formula):
+        code = _mask_tableau_non_code(formula)
+        if _UNSUPPORTED_FUNCTIONS.search(code):
             complexity += 5
-        elif _PARTIAL_FUNCTIONS.search(formula):
+        elif _PARTIAL_FUNCTIONS.search(code):
             complexity += 2
-        elif _LOD_PATTERN.search(formula):
+        elif _LOD_PATTERN.search(code):
             complexity += 1
-        elif _TABLE_CALC_PATTERN.search(formula):
+        elif _TABLE_CALC_PATTERN.search(code):
             complexity += 1
 
     if complexity <= 20:
@@ -1349,11 +1360,12 @@ def _check_performance(extracted: Dict) -> CategoryResult:
     lookupvalue_count = 0
     for c in calcs:
         formula = c.get("formula", "") or ""
-        if re.search(r'\{(?:FIXED|INCLUDE|EXCLUDE)\s', formula):
+        code = _mask_tableau_non_code(formula)
+        if re.search(r'\{(?:FIXED|INCLUDE|EXCLUDE)\s', code):
             lod_count += 1
-        if re.search(r'\b(?:RUNNING_|WINDOW_|RANK|INDEX)\b', formula, re.IGNORECASE):
+        if _TABLE_CALC_PATTERN.search(code):
             table_calc_count += 1
-        if 'LOOKUPVALUE' in formula.upper():
+        if 'LOOKUPVALUE' in code.upper():
             lookupvalue_count += 1
 
     complexity_score = lod_count * 3 + table_calc_count * 2 + len(filters_list) + lookupvalue_count * 2

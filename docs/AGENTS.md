@@ -1,9 +1,10 @@
 # Multi-Agent Architecture — Tableau to Power BI Migration
 
 This project uses a **17-agent implementation specialization model**, plus
-`@roadmap-planner` for planning and `@readme` as the documentation quality gate.
-Each implementation agent has scoped domain knowledge, file ownership, and clear
-boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep
+`@tableau-formula-analyst` for cross-layer formula diagnosis without source-file
+ownership, `@roadmap-planner` for planning, and `@readme` as the documentation
+quality gate. Each implementation agent has scoped domain knowledge, file
+ownership, and clear boundaries. Four specialist agents (@dax, @wiring, @semantic, @visual) provide deep
 conversion expertise; **@healing**, **@evidence**, **@fabric** and **@ai** own the
 self-repair, quality-evidence, Fabric-native and agent-facing surfaces; **@tableau**
 handles Tableau Server/Cloud interaction, **@reviewer** owns the preceptor scoring
@@ -22,6 +23,7 @@ its release criteria pass.
 | **@extractor** | Parsing Tableau XML (.twb/.twbx), Hyper files, Prep flow conversion | `tableau_export/extract_tableau_data.py`, `datasource_extractor.py`, `hyper_reader.py`, `pulse_extractor.py`, `prep_flow_parser.py` |
 | **@tableau** | Tableau Server/Cloud REST API, JWT auth, site discovery, permissions, metadata lineage, Prep flow analysis | `tableau_export/server_client.py`, `tableau_export/prep_flow_analyzer.py` |
 | **@dax** | DAX formula correctness, conversion, optimization, aggregation context, cross-table refs | `dax_converter.py`, `dax_optimizer.py`, `tmdl_dax_postprocess.py` |
+| **@tableau-formula-analyst** | Cross-layer formula diagnosis: dependencies, row grain, LOD, MAKEPOINT; evidence-backed implementation proposals | No source-file ownership; hands changes to the owning specialist |
 | **@wiring** | DAX↔M bridge, calc column vs measure classification, M generation, M step injection | `m_query_builder.py`, `calc_column_utils.py`, `tmdl_m_conversion.py` |
 | **@semantic** | TMDL semantic model, relationships, Calendar, RLS, hierarchies, parameters | `tmdl_generator.py` (structural) |
 | **@visual** | PBIR report, visual containers, slicers, filters, bookmarks, themes, pages | `pbip_generator.py`, `visual_generator.py` |
@@ -40,13 +42,15 @@ its release criteria pass.
 
 ## Architecture Diagram
 
-Seventeen implementation agents own the pipeline; `@roadmap-planner` and
-`@readme` govern what gets built and what gets claimed.
+Seventeen implementation agents own the pipeline; `@tableau-formula-analyst`
+diagnoses cross-layer formula issues, while `@roadmap-planner` and `@readme`
+govern scope and documentation claims. These three agents own no source files.
 
 ```mermaid
 flowchart TB
-    subgraph GOV["Governance (no source ownership)"]
+    subgraph GOV["Analysis & governance (no source ownership)"]
         direction LR
+        FORM["<b>@tableau-formula-analyst</b><br/><i>formula diagnosis · dependencies · grain</i>"]
         PLAN["@roadmap-planner<br/><i>waves, gates, priorities</i>"]
         DOCS["@readme<br/><i>docs truth before/after change</i>"]
     end
@@ -95,6 +99,8 @@ flowchart TB
 
     PLAN -.-> ORCH
     DOCS -.-> ORCH
+    JSON -.-> FORM
+    OUT -.-> FORM
     ORCH --> EXT & TAB
     TAB --> EXT
     EXT --> JSON
@@ -116,7 +122,7 @@ flowchart TB
     classDef core fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e
     classDef gate fill:#fef3c7,stroke:#d97706,color:#78350f
     classDef art fill:#dcfce7,stroke:#16a34a,color:#14532d
-    class PLAN,DOCS gov
+    class FORM,PLAN,DOCS gov
     class ORCH,EXT,TAB,DAX,WIR,SEM,VIS,FAB core
     class HEAL,EVI,ASS,REV,TEST gate
     class JSON,OUT art
@@ -126,7 +132,7 @@ flowchart TB
 
 | Layer | Agents | Boundary |
 |---|---|---|
-| Governance | `@roadmap-planner`, `@readme` | Own no source; gate scope and claims |
+| Analysis & governance | `@tableau-formula-analyst`, `@roadmap-planner`, `@readme` | Own no source; diagnose cross-layer formula issues, plan scope, and gate claims |
 | Pipeline | `@orchestrator` | CLI, batch, checkpoints |
 | Source | `@extractor`, `@tableau` | Tableau XML, Hyper, Prep, Server API |
 | Conversion | `@dax`, `@wiring` | Formulas and the DAX↔M bridge |

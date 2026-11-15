@@ -3493,6 +3493,106 @@ class TestCreateVisualFilters(unittest.TestCase):
         filt_str = json.dumps(result)
         self.assertIn('ComparisonKind', filt_str)
 
+    def _assert_record_range_filter(self, column_type, minimum, maximum,
+                                    expected_bounds, field='RecordCode'):
+        _init_field_map(self.gen, {'RecordCode': ('Records', 'RecordCode')})
+        self.gen._actual_bim_symbols = {('Records', 'RecordCode')}
+        self.gen._actual_bim_column_types = {
+            ('Records', 'RecordCode'): column_type,
+        }
+        result = self.gen._create_visual_filters([{
+            'field': field, 'type': 'range', 'min': minimum, 'max': maximum,
+        }])
+        if not expected_bounds:
+            self.assertEqual(result, [])
+            return
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], {
+            'name': result[0]['name'],
+            'type': 'Advanced',
+            'field': {'Column': {
+                'Expression': {'SourceRef': {'Entity': 'Records'}},
+                'Property': 'RecordCode',
+            }},
+            'filter': {
+                'Version': 2,
+                'From': [{'Name': 't', 'Entity': 'Records', 'Type': 0}],
+                'Where': [{'Condition': {'Comparison': {
+                    'ComparisonKind': comparison_kind,
+                    'Left': {'Column': {
+                        'Expression': {'SourceRef': {'Source': 't'}},
+                        'Property': 'RecordCode',
+                    }},
+                    'Right': {'Literal': {'Value': literal}},
+                }}} for comparison_kind, literal in expected_bounds],
+            },
+        })
+
+    def test_string_range_numeric_looking_bounds(self):
+        for minimum, maximum in [('10', '4397'), (10, 4397)]:
+            with self.subTest(minimum=minimum, maximum=maximum):
+                self._assert_record_range_filter(
+                    'string', minimum, maximum, [(2, "'10'"), (3, "'4397'")])
+
+    def test_string_range_text_and_escaped_bounds(self):
+        for minimum, maximum, expected in [
+            ('A10', 'Z4397', [(2, "'A10'"), (3, "'Z4397'")]),
+            ("L'ete", 'Z\u00e9phyr', [(2, "'L''ete'"), (3, "'Z\u00e9phyr'")]),
+            ('true', 'false', [(2, "'true'"), (3, "'false'")]),
+        ]:
+            with self.subTest(minimum=minimum, maximum=maximum):
+                self._assert_record_range_filter(
+                    'string', minimum, maximum, expected)
+
+    def test_numeric_range_bounds_keep_numeric_literals(self):
+        for column_type, minimum, maximum, expected in [
+            ('int64', '10', '4397', [(2, '10L'), (3, '4397L')]),
+            ('integer', 10, 4397, [(2, '10L'), (3, '4397L')]),
+            ('double', '10.5', '4397.25', [(2, '10.5D'), (3, '4397.25D')]),
+        ]:
+            with self.subTest(column_type=column_type):
+                self._assert_record_range_filter(
+                    column_type, minimum, maximum, expected)
+
+    def test_date_range_bounds_keep_datetime_literals(self):
+        for field, minimum, maximum, expected in [
+            ('[source].[yr:RecordCode:qk]', '2000', '2012', [
+                (2, "datetime'2000-01-01T00:00:00'"),
+                (3, "datetime'2012-12-31T23:59:59'"),
+            ]),
+            ('RecordCode', '#2001-12-07#', '#2012-12-01#', [
+                (2, "datetime'2001-12-07T00:00:00'"),
+                (3, "datetime'2012-12-01T00:00:00'"),
+            ]),
+        ]:
+            with self.subTest(field=field):
+                self._assert_record_range_filter(
+                    'datetime', minimum, maximum, expected, field=field)
+
+    def test_string_range_date_looking_bounds_stay_strings(self):
+        for field, minimum, maximum, expected in [
+            ('[source].[yr:RecordCode:qk]', '2000', '2012', [
+                (2, "'2000'"), (3, "'2012'"),
+            ]),
+            ('RecordCode', '#2001-12-07#', '#2012-12-01#', [
+                (2, "'#2001-12-07#'"), (3, "'#2012-12-01#'"),
+            ]),
+        ]:
+            with self.subTest(field=field):
+                self._assert_record_range_filter(
+                    'string', minimum, maximum, expected, field=field)
+
+    def test_string_range_empty_or_null_bounds(self):
+        for missing in (None, '', '   '):
+            for minimum, maximum, expected in [
+                (missing, '4397', [(3, "'4397'")]),
+                ('10', missing, [(2, "'10'")]),
+                (missing, missing, []),
+            ]:
+                with self.subTest(minimum=minimum, maximum=maximum):
+                    self._assert_record_range_filter(
+                        'string', minimum, maximum, expected)
+
     def test_categorical_filter(self):
         filters = [{'field': 'Region', 'values': ['East', 'West']}]
         result = self.gen._create_visual_filters(filters)
@@ -4510,12 +4610,13 @@ class TestWorksheetContainerObjects(unittest.TestCase):
             'position': {'x': 0, 'y': 0, 'w': 400, 'h': 300},
         }
 
-    def _create_worksheet_visual(self):
+    def _create_worksheet_visual(self, output_dir=None):
+        output_dir = output_dir or self.tmpdir.name
         self.gen._create_visual_worksheet(
-            self.tmpdir.name, self.worksheet, self.zone,
+            output_dir, self.worksheet, self.zone,
             1.0, 1.0, 0, [self.worksheet], {},
         )
-        visual_files = list(Path(self.tmpdir.name).rglob('visual.json'))
+        visual_files = list(Path(output_dir).rglob('visual.json'))
         self.assertEqual(len(visual_files), 1)
         return json.loads(visual_files[0].read_text(encoding='utf-8'))
 
@@ -4528,6 +4629,177 @@ class TestWorksheetContainerObjects(unittest.TestCase):
             {'name': 'Region', 'shelf': 'rows'},
             {'name': 'Revenue', 'shelf': 'columns'},
         ]
+
+    def _colliding_selector_query(self, multiple_aggregations, reverse_roles):
+        column = {'Column': {
+            'Expression': {'SourceRef': {'Entity': 'Synthetic'}},
+            'Property': 'Amount',
+        }}
+        def aggregate(function):
+            return {'Aggregation': {
+                'Expression': copy.deepcopy(column), 'Function': function,
+            }}
+
+        fields = [('Category', column), ('Y', aggregate(0))]
+        if multiple_aggregations:
+            self.worksheet['chart_type'] = 'lineClusteredColumnComboChart'
+            fields = [('Y', aggregate(0)), ('Y2', aggregate(1))]
+        if reverse_roles:
+            fields.reverse()
+        state = {role: {'projections': [{
+            'field': copy.deepcopy(field),
+            'queryRef': 'Synthetic.Amount',
+            'nativeQueryRef': 'Amount',
+            'active': True,
+        }]} for role, field in fields}
+        self.worksheet['fields'] = [
+            {'name': 'Amount', 'shelf': 'columns'},
+        ]
+        _init_field_map(self.gen, {'Amount': ('Synthetic', 'Amount')},
+                        main_table='Synthetic')
+        return {'queryState': state}
+
+    def _assert_collision_selectors(self, multiple_aggregations, producer,
+                                    reverse_roles=False):
+        from powerbi_import.visual_generator import finalize_native_query_refs
+
+        query = self._colliding_selector_query(
+            multiple_aggregations, reverse_roles)
+        self.assertEqual([data['projections'][0]['queryRef']
+                          for data in query['queryState'].values()],
+                         ['Synthetic.Amount', 'Synthetic.Amount'])
+        original_fields = {
+            role: copy.deepcopy(data['projections'][0]['field'])
+            for role, data in query['queryState'].items()
+        }
+        if producer == 'general':
+            self.worksheet['formatting'] = {'field_formats': {'Amount': '0.00'}}
+        else:
+            self.worksheet['mark_encoding'] = {'color': {
+                'field': 'Measure Names', 'type': 'categorical',
+                'color_values': {'Amount': '#125A8C'},
+            }}
+        with tempfile.TemporaryDirectory(dir=self.tmpdir.name) as output_dir:
+            with patch.object(self.gen, '_build_visual_query', return_value=query):
+                payload = self._create_worksheet_visual(output_dir)
+        visual = payload['visual']
+        self.assertEqual(visual['visualType'], self.worksheet['chart_type'])
+        state = visual['query']['queryState']
+        self.assertEqual(set(state), set(original_fields))
+        projections = [projection for data in state.values()
+                       for projection in data['projections']]
+        self.assertEqual(len(projections), 2)
+        expected_refs = {'Category': 'Synthetic.Amount', 'Y': 'Sum(Synthetic.Amount)'}
+        if multiple_aggregations:
+            expected_refs = (
+                {'Y2': 'Avg(Synthetic.Amount)', 'Y': 'Synthetic.Amount'}
+                if reverse_roles else
+                {'Y': 'Sum(Synthetic.Amount)', 'Y2': 'Synthetic.Amount'}
+            )
+        for role, data in state.items():
+            self.assertEqual(len(data['projections']), 1)
+            projection = data['projections'][0]
+            self.assertEqual(projection['field'], original_fields[role])
+            self.assertEqual(projection['queryRef'], expected_refs[role])
+            self.assertTrue(projection['active'])
+        self.assertEqual([projection['nativeQueryRef'] for projection in projections],
+                         ['Amount', 'Amount__2'])
+        self.assertEqual(len({projection['queryRef'] for projection in projections}), 2)
+        instances = visual['objects'][producer]
+        self.assertEqual(len(instances), 2)
+        self.assertEqual({instance['selector']['metadata'] for instance in instances},
+                         set(expected_refs.values()))
+        expected_fields_by_ref = {
+            expected_refs[role]: field for role, field in original_fields.items()
+        }
+        for instance in instances:
+            reference = instance['selector']['metadata']
+            matches = [projection for projection in projections
+                       if projection['queryRef'] == reference]
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0]['field'], expected_fields_by_ref[reference])
+            if producer == 'general':
+                self.assertEqual(instance['properties'], {'formatString': _L("'0.00'")})
+            else:
+                self.assertEqual(instance['properties'], {
+                    'fill': {'solid': {'color': _L("'#125A8C'")}},
+                })
+        finalized = copy.deepcopy(visual)
+        finalize_native_query_refs(state, visual=visual)
+        self.assertEqual(visual, finalized)
+        self.assertEqual({role: data['projections'][0]['field']
+                          for role, data in query['queryState'].items()}, original_fields)
+        self.assertEqual([data['projections'][0]['nativeQueryRef']
+                          for data in query['queryState'].values()], ['Amount', 'Amount'])
+        self.assertEqual({role: data['projections'][0]['queryRef']
+                  for role, data in query['queryState'].items()}, expected_refs)
+
+    def test_raw_and_aggregate_general_selectors_finalize(self):
+        for reverse_roles in (False, True):
+            with self.subTest(reverse_roles=reverse_roles):
+                self._assert_collision_selectors(False, 'general', reverse_roles)
+
+    def test_raw_and_aggregate_data_point_selectors_finalize(self):
+        for reverse_roles in (False, True):
+            with self.subTest(reverse_roles=reverse_roles):
+                self._assert_collision_selectors(False, 'dataPoint', reverse_roles)
+
+    def test_multiple_aggregations_general_selectors_finalize(self):
+        for reverse_roles in (False, True):
+            with self.subTest(reverse_roles=reverse_roles):
+                self._assert_collision_selectors(True, 'general', reverse_roles)
+
+    def test_multiple_aggregations_data_point_selectors_finalize(self):
+        for reverse_roles in (False, True):
+            with self.subTest(reverse_roles=reverse_roles):
+                self._assert_collision_selectors(True, 'dataPoint', reverse_roles)
+
+    def test_collision_selectors_reject_old_preformat_behavior(self):
+        from powerbi_import.visual_generator import AmbiguousNativeQueryRefError
+
+        for multiple_aggregations in (False, True):
+            for producer in ('general', 'dataPoint'):
+                with self.subTest(multiple_aggregations=multiple_aggregations,
+                                  producer=producer):
+                    with patch('powerbi_import.pbip_generator.'
+                               '_disambiguate_aggregation_query_refs') as disambiguate:
+                        with self.assertRaisesRegex(
+                                AmbiguousNativeQueryRefError,
+                                'can denote different projected field expressions'):
+                            self._assert_collision_selectors(multiple_aggregations, producer)
+                    disambiguate.assert_called_once()
+
+    def test_manual_unresolved_and_ambiguous_alias_selectors_still_reject(self):
+        from powerbi_import.visual_generator import AmbiguousNativeQueryRefError
+
+        build_objects = self.gen._build_visual_objects
+        for producer in ('general', 'dataPoint'):
+            for selector, native_alias, reason in (
+                ({'metadata': 'Amount'}, 'Amount', 'native alias'),
+                ({'nativeQueryRef': 'Amount'}, 'Amount', 'native alias'),
+                ({'metadata': 'Synthetic.Amount'}, 'Synthetic.Amount',
+                 'can denote different projected field expressions'),
+            ):
+                with self.subTest(producer=producer, selector=selector):
+                    query = self._colliding_selector_query(False, False)
+                    for data in query['queryState'].values():
+                        data['projections'][0]['nativeQueryRef'] = native_alias
+
+                    def manual_alias_objects(*args, **kwargs):
+                        objects = build_objects(*args, **kwargs)
+                        objects[producer] = [{
+                            'selector': selector,
+                            'properties': {'formatString': _L("'0.00'")},
+                        }]
+                        return objects
+
+                    with patch.object(self.gen, '_build_visual_query', return_value=query), \
+                            patch.object(self.gen, '_build_visual_objects',
+                                         side_effect=manual_alias_objects):
+                        with self.assertRaisesRegex(
+                            AmbiguousNativeQueryRefError, reason):
+                            self._create_worksheet_visual()
+                    self.assertEqual(list(Path(self.tmpdir.name).rglob('visual.json')), [])
 
     def test_unresolved_reference_lines_add_migration_note(self):
         self.worksheet['reference_lines'] = [

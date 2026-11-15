@@ -34,6 +34,26 @@ class TestPromoteMeasureDependentCalcColumns(unittest.TestCase):
         self.assertEqual(t["columns"], [])
         self.assertIn("Weighted", {m["name"] for m in t["measures"]})
 
+    def test_escaped_closing_bracket_measure_reference_is_detected(self):
+        t = _table(
+            [{"name": "Weighted", "expression": "[Net]] Total] * 'Sales'[Amount]",
+              "isCalculated": True}],
+            [{"name": "Net] Total", "expression": "SUM('Sales'[Amount])"}],
+        )
+        promoted = _promote_measure_dependent_calc_columns(t)
+        self.assertEqual(promoted, [("Weighted", ["Net] Total"])])
+        self.assertEqual(t["columns"], [])
+
+    def test_measure_name_in_string_literal_does_not_promote_column(self):
+        expr = 'IF(\'Sales\'[Category] = "[Total]", 1, 0)'
+        t = _table(
+            [{"name": "Flag", "expression": expr, "isCalculated": True}],
+            [{"name": "Total", "expression": "SUM('Sales'[Amount])"}],
+        )
+        promoted = _promote_measure_dependent_calc_columns(t)
+        self.assertEqual(promoted, [])
+        self.assertEqual([column["name"] for column in t["columns"]], ["Flag"])
+
     def test_expression_is_carried_over_unchanged(self):
         expr = "[Total] * 'Sales'[Amount]"
         t = _table(

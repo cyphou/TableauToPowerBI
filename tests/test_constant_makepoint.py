@@ -14,6 +14,7 @@ import unittest
 
 from powerbi_import.assessment import (
     FAIL,
+    INFO,
     PASS,
     WARN,
     _check_calculations,
@@ -42,8 +43,8 @@ class TestConstantPointIsRecognised(unittest.TestCase):
     def test_the_srid_form(self):
         self.assertTrue(_is_constant_point_only('MAKEPOINT(652000, 6862000, 2154)'))
 
-    def test_inside_a_larger_expression(self):
-        self.assertTrue(_is_constant_point_only(
+    def test_row_dependent_condition_is_not_constant(self):
+        self.assertFalse(_is_constant_point_only(
             'IF [x] > 0 THEN MAKEPOINT(1.5, 2.5) END'))
 
 
@@ -80,14 +81,76 @@ class TestAnythingElseIsNotConstant(unittest.TestCase):
 
 class TestTheVerdict(unittest.TestCase):
 
+    def test_quoted_table_calc_lod_and_script_text_is_ignored(self):
+        checks = _checks(
+            '"WINDOW_SUM(1) {INCLUDE [Region] : SUM([Sales])} SCRIPT_REAL(1)"')
+        for check_name in (
+            'Table calculations',
+            'LOD expressions',
+            'SCRIPT_* analytics extensions',
+        ):
+            with self.subTest(check=check_name):
+                self.assertEqual(checks[check_name].severity, PASS)
+                self.assertNotIn('Calc 0', checks[check_name].detail)
+
+    def test_real_table_calculation_is_detected(self):
+        checks = _checks('WINDOW_SUM(1)')
+        self.assertEqual(checks['Table calculations'].severity, INFO)
+        self.assertIn('Calc 0', checks['Table calculations'].detail)
+
+    def test_real_lod_expression_is_detected(self):
+        checks = _checks('{INCLUDE [Region] : SUM([Sales])}')
+        self.assertEqual(checks['LOD expressions'].severity, INFO)
+        self.assertIn('Calc 0', checks['LOD expressions'].detail)
+
+    def test_real_script_extension_is_detected(self):
+        checks = _checks('SCRIPT_REAL(1)')
+        self.assertEqual(checks['SCRIPT_* analytics extensions'].severity, WARN)
+        self.assertIn('Calc 0', checks['SCRIPT_* analytics extensions'].detail)
+
     def test_a_constant_point_warns_instead_of_failing(self):
         checks = _checks('MAKEPOINT(48.85, 2.35)')
+        self.assertEqual(checks['Unsupported functions'].severity, PASS)
+        self.assertEqual(checks['Constant MAKEPOINT'].severity, WARN)
+
+    def test_scientific_notation_constant_point_warns_not_fails(self):
+        formula = 'MAKEPOINT(1e2, 2)'
+        self.assertTrue(_is_constant_point_only(formula))
+
+        checks = _checks(formula)
         self.assertEqual(checks['Unsupported functions'].severity, PASS)
         self.assertEqual(checks['Constant MAKEPOINT'].severity, WARN)
 
     def test_a_point_from_columns_still_fails(self):
         checks = _checks('MAKEPOINT([Lat], [Lon])')
         self.assertEqual(checks['Unsupported functions'].severity, FAIL)
+        self.assertNotIn('Constant MAKEPOINT', checks)
+
+    def test_constant_point_under_row_condition_fails(self):
+        checks = _checks('IF [Flag] THEN MAKEPOINT(1, 2) END')
+        self.assertEqual(checks['Unsupported functions'].severity, FAIL)
+        self.assertNotIn('Constant MAKEPOINT', checks)
+
+    def test_quoted_column_call_shaped_text_is_ignored(self):
+        checks = _checks('"MAKEPOINT([Lat], [Lon])"')
+        self.assertEqual(checks['Unsupported functions'].severity, PASS)
+        self.assertNotIn('Constant MAKEPOINT', checks)
+
+    def test_quoted_constant_call_shaped_text_does_not_warn(self):
+        checks = _checks('"MAKEPOINT(1, 2)"')
+        self.assertEqual(checks['Unsupported functions'].severity, PASS)
+        self.assertNotIn('Constant MAKEPOINT', checks)
+
+    def test_real_call_is_detected_alongside_quoted_call_shaped_text(self):
+        checks = _checks(
+            'IF "MAKEPOINT([Lat], [Lon])" = "x" '
+            'THEN MAKEPOINT([Lat], [Lon]) END')
+        self.assertEqual(checks['Unsupported functions'].severity, FAIL)
+        self.assertNotIn('Constant MAKEPOINT', checks)
+
+    def test_call_shaped_text_in_a_comment_is_ignored(self):
+        checks = _checks('SUM([Sales]) // MAKEPOINT(1, 2)')
+        self.assertEqual(checks['Unsupported functions'].severity, PASS)
         self.assertNotIn('Constant MAKEPOINT', checks)
 
     def test_both_kinds_are_reported_separately(self):

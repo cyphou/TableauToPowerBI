@@ -4,6 +4,21 @@
 
 ## Unreleased
 
+- Distinguish bounded scalar binary MIN/MAX from unary aggregates when local
+  physical numeric bindings are proven; preserve nulls and consuming column
+  aggregations. Scope numeric constants and their transitive aliases by source
+  identity so homonymous calculations cannot inline another datasource's value.
+  Preserve diagnostics for conflicting or unproved ownership; static regression
+  coverage does not establish native refresh or value parity.
+- Enforce the REST upload API's per-IP batch limit before reading upload bodies,
+  use a monotonic clock for its sliding window, and advertise HTTP 429 in
+  OpenAPI. Keep this process-local limit separate from Tableau Server throttling.
+- Preserve the declared string type in both PBIR range-filter bounds, including
+  numeric- and date-looking text, instead of emitting incompatible numeric/date
+  literals. Keep numeric/date ranges and the filters themselves unchanged.
+- Disambiguate cross-role projection query references before building general
+  and data-point formatting selectors. Preserve each projection expression and
+  native alias; continue rejecting genuinely ambiguous selector references.
 - Align conversion references, sample descriptions and architecture documentation
   with bounded FIXED shelf approximations and datasource-scoped calculation
   conflict handling; distinguish manual examples from generator guarantees.

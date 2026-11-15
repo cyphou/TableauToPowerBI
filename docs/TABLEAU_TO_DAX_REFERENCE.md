@@ -68,8 +68,8 @@ when reviewing a conversion. Static syntax validation does not execute DAX.
 | 14 | `HEXBINY(number, number)` | `0` + comment | ❌ | No DAX equivalent |
 | 15 | `LN(number)` | `LN(number)` | ✅ | |
 | 16 | `LOG(number [, base])` | `LOG(number [, base])` | ✅ | |
-| 17 | `MAX(a, b)` | `MAX(a, b)` | ✅ | |
-| 18 | `MIN(a, b)` | `MIN(a, b)` | ✅ | |
+| 17 | `MAX(a, b)` | Null-preserving scalar conditional for a proven local numeric physical column and a non-null numeric literal | ⚠️ | Either argument order; requires model metadata. Unary MAX remains an aggregate. |
+| 18 | `MIN(a, b)` | Null-preserving scalar conditional for a proven local numeric physical column and a non-null numeric literal | ⚠️ | Either argument order; requires model metadata. Unary MIN remains an aggregate. |
 | 19 | `PI()` | `PI()` | ✅ | |
 | 20 | `POWER(number, power)` | `POWER(number, power)` | ✅ | |
 | 21 | `RADIANS(number)` | `(number) * PI() / 180` | ✅ | No native DAX RADIANS |
@@ -80,6 +80,12 @@ when reviewing a conversion. Static syntax validation does not execute DAX.
 | 26 | `SQUARE(number)` | `POWER(number, 2)` | ✅ | |
 | 27 | `TAN(number)` | `TAN(number)` | ✅ | |
 
+The bounded binary MIN/MAX path produces a row-level calculated column, not an
+aggregate measure; a consuming `SUM` retains its column aggregation. Text,
+arbitrary expressions, calculated dependencies, and cross-table operands are not
+newly supported by this path. Context-free previews do not establish numeric
+physical bindings. Existing LOD and source-grain proof requirements still apply.
+
 ---
 
 ## 3. Date Functions
@@ -88,17 +94,17 @@ when reviewing a conversion. Static syntax validation does not execute DAX.
 |---|---------|-----|--------|-------|
 | 1 | `DATEADD(date_part, interval, date)` | `DATEADD(date_column, interval, DAY/MONTH/...)` | ✅ | |
 | 2 | `DATEDIFF(date_part, start, end)` | `DATEDIFF(start, end, INTERVAL)` | ✅ | Args reordered |
-| 3 | `DATENAME(date_part, date)` | `FORMAT(date, format_string)` | ✅ | "MMMM", "DDDD", etc. |
+| 3 | `DATENAME(date_part, date)` | `FORMAT` by supported part | ✅/🔧 | `year` → `"YYYY"`, `quarter` → `"Q"`, `month` → `"MMMM"`, `day` → `"D"`, `weekday/dayofweek` → `"DDDD"`; hour/minute/second use null-guarded numeric `FORMAT`. Unsupported parts or arities produce diagnostic `TODO`/`BLANK()`. |
 | 4 | `DATEPARSE(format, string)` | `DATEVALUE(string)` | ✅ | Format arg dropped |
 | 5 | `DATEPART('year', date)` | `YEAR(date)` | ✅ | |
-| 6 | `DATEPART('quarter', date)` | `QUARTER(date)` | ✅ | |
+| 6 | `DATEPART('quarter', date)` | `IF(ISBLANK(date), BLANK(), INT((MONTH(date) - 1) / 3) + 1)` | ✅ | Null-preserving scalar quarter |
 | 7 | `DATEPART('month', date)` | `MONTH(date)` | ✅ | |
 | 8 | `DATEPART('day', date)` | `DAY(date)` | ✅ | |
 | 9 | `DATEPART('hour', date)` | `HOUR(date)` | ✅ | |
 | 10 | `DATEPART('minute', date)` | `MINUTE(date)` | ✅ | |
 | 11 | `DATEPART('second', date)` | `SECOND(date)` | ✅ | |
-| 12 | `DATEPART('week', date)` | `WEEKNUM(date)` | ✅ | |
-| 13 | `DATEPART('weekday', date)` | `WEEKDAY(date)` | ✅ | |
+| 12 | `DATEPART('week', date[, start_of_week])` | Diagnostic `TODO`/`BLANK()` | 🔧 | Requires verified Tableau week-start and numbering semantics; no `WEEKNUM` or guessed result is emitted |
+| 13 | `DATEPART('weekday', date)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Weekday numbering depends on verified Tableau week-start semantics; no `WEEKDAY` default is assumed |
 | 14 | `DATETRUNC('year', date)` | `STARTOFYEAR(date)` | ✅ | → `DATE()` in calc columns |
 | 15 | `DATETRUNC('quarter', date)` | `STARTOFQUARTER(date)` | ✅ | → `DATE()` in calc columns |
 | 16 | `DATETRUNC('month', date)` | `STARTOFMONTH(date)` | ✅ | → `DATE()` in calc columns |
@@ -144,6 +150,11 @@ when reviewing a conversion. Static syntax validation does not execute DAX.
 | 14 | `OR` (operator) | `\|\|` | ✅ | |
 | 15 | `ZN(expression)` | `IF(ISBLANK(expr), 0, expr)` | ✅ | |
 | 16 | `==` | `=` | ✅ | |
+
+Conditional comparisons preserve Tableau's NULL result for supported text
+functions (`LEFT`, `RIGHT`, `MID`, `UPPER`, `LOWER`, `TRIM`, `LEN`, `STR`) by
+guarding evaluated arguments with `ISBLANK`. Unsupported argument counts remain
+diagnostic rather than being emitted with guessed semantics.
 
 ---
 
@@ -232,9 +243,9 @@ When an aggregate wraps an expression (not a single column), the converter auto-
 | # | Tableau | DAX | Status | Notes |
 |---|---------|-----|--------|-------|
 | 1 | `{FIXED [dim] : AGG(expr)}` | Exact DAX with proof; otherwise bounded SUMX/AVERAGEX/MINX/MAXX or annotated `BLANK()` | ⚠️ | Apply the three-level FIXED policy below. Composite/range logical relationships require the explicit policy in [Known Limitations](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships). |
-| 2 | `{INCLUDE [dim] : AGG(expr)}` | `CALCULATE(AGG(expr))` | ✅ | |
-| 3 | `{EXCLUDE [dim] : AGG(expr)}` | `CALCULATE(AGG(expr), REMOVEFILTERS('T'[dim]))` | ✅ | |
-| 4 | `{AGG(expr)}` (no dims) | `CALCULATE(AGG(expr))` | ✅ | |
+| 2 | `{INCLUDE [dim] : AGG(expr)}` | Annotated SUMX/AVERAGEX/MINX/MAXX over explicit shelf evidence and same-table physical keys; otherwise diagnostic `BLANK()` | ⚠️ | Numeric physical columns and an unambiguous SUM/AVG/MIN/MAX shelf are required; source filters and totals remain unverified. |
+| 3 | `{EXCLUDE [dim] : AGG(expr)}` | Annotated `CALCULATE(AGG(expr), REMOVEFILTERS(...))` for same-table physical keys and numeric aggregates; otherwise diagnostic `BLANK()` | ⚠️ | Aggregating an EXCLUDE result, cross-table keys, or unsupported row expressions require verified target grain and are not guessed. |
+| 4 | `{AGG(expr)}` (table-scoped, no dims) | Diagnostic `BLANK()` unless source row bag, filter scope and total grain are proven | ⚠️ | A context-free `CALCULATE` does not establish Tableau's table-scoped grain or total semantics. |
 
 FIXED uses three levels, in order:
 

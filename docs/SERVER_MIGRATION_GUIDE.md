@@ -330,3 +330,9 @@ Use `--cutover-rollback {snapshot_path}` to restore the previous state.
 ### Rate limiting
 For large sites (1000+ workbooks), the tool respects Tableau Server rate limits.
 If you encounter 429 errors, add `--parallel 1` to serialize API calls.
+
+The separate REST upload API (`powerbi_import.api_server`) limits authenticated
+`POST /migrate/batch` attempts to **10 per client IP per 60 seconds**. The check
+runs before the upload body is read; excess attempts return HTTP `429`. The
+limit is process-local and does not apply to Tableau Server requests or the
+folder-based CLI.

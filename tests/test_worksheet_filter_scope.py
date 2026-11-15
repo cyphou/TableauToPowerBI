@@ -44,6 +44,7 @@ class TestWorksheetFilterScope(unittest.TestCase):
         generator._actual_bim_column_types = {
             (table, field): 'string' for table, field in generator._actual_bim_symbols
         }
+        generator._actual_bim_column_types[('FactsA', 'Jour')] = 'date'
         generator._actual_bim_measure_symbols = set()
         generator._measure_names = set()
         generator._bim_measure_names = set()

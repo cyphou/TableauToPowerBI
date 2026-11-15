@@ -705,6 +705,32 @@ class TestProcessSetsGroupsBins(unittest.TestCase):
         comb = next((c for c in cols if c["name"] == "Combined"), None)
         self.assertIsNotNone(comb)
 
+    def test_combined_group_week_prefix_requires_verified_semantics(self):
+        model = self._make_model()
+        extra = {"groups": [{
+            "name": "Combined",
+            "group_type": "combined",
+            "source_fields": ["wk:Category", "Amount"],
+        }]}
+        with self.assertRaisesRegex(
+                ValueError,
+                r"(?i)(week.*(start|numbering).*unverified|unverified.*week.*(start|numbering))"):
+            _process_sets_groups_bins(
+                model, extra, "Sales", {"Category": "Sales", "Amount": "Sales"})
+
+    def test_combined_group_week_name_wrapper_requires_verified_semantics(self):
+        model = self._make_model()
+        extra = {"groups": [{
+            "name": "Combined (Category, WEEK(Amount))",
+            "group_type": "combined",
+            "source_fields": ["Category", "Amount"],
+        }]}
+        with self.assertRaisesRegex(
+                ValueError,
+                r"(?i)(week.*(start|numbering).*unverified|unverified.*week.*(start|numbering))"):
+            _process_sets_groups_bins(
+                model, extra, "Sales", {"Category": "Sales", "Amount": "Sales"})
+
     def test_bin(self):
         model = self._make_model()
         extra = {"bins": [{"name": "Amount Bin", "source_field": "Amount", "bin_size": 100}]}

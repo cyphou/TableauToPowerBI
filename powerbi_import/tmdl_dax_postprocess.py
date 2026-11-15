@@ -270,8 +270,9 @@ def _promote_measure_dependent_calc_columns(result_table):
             if not (col.get("isCalculated") and expr and name):
                 kept.append(col)
                 continue
-            called = sorted({r for r in _BARE_REF_RE.findall(expr)
-                             if r in measure_names})
+            refs, _ = _dax_dependency_tokens(expr)
+            called = sorted({ref_name for owner, ref_name, _ in refs
+                             if owner is None and ref_name in measure_names})
             if not called or name in measure_names:
                 kept.append(col)
                 continue

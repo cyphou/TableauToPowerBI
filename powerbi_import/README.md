@@ -80,6 +80,9 @@ REST upload API server (stdlib `http.server`). `POST /migrate/batch` accepts a
 ZIP containing one or more Tableau files; `POST /migrate` is retired (HTTP 410).
 Status/download routes include `GET /batch/{id}`, `GET /status/{id}`,
 `GET /download/{id}`, `GET /health` and `GET /jobs`.
+Authenticated batch submissions are limited to 10 requests per client IP per
+60-second window, checked before reading the upload body; excess requests return
+HTTP 429. This process-local limit is separate from Tableau Server throttling.
 This is distinct from the loopback-only [local browser runner](../web/local_server.py),
 which accepts trusted local folder paths, not uploads. See the
 [deployment guide](../docs/DEPLOYMENT_GUIDE.md) and

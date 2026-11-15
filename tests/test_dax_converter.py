@@ -809,6 +809,12 @@ class TestLeftRightNullAndLengthSemantics(unittest.TestCase):
             '"RIGHT(example, 2)"',
         )
 
+    def test_proper_function_like_text_literal_is_unchanged(self):
+        self.assertEqual(
+            convert_tableau_formula_to_dax('"PROPER(example)"'),
+            '"PROPER(example)"',
+        )
+
 
 class TestSimpleFunctionConversions(unittest.TestCase):
     """Test direct Tableau → DAX function name mappings."""
@@ -825,6 +831,43 @@ class TestSimpleFunctionConversions(unittest.TestCase):
     def test_ifnull_to_if_isblank(self):
         result = convert_tableau_formula_to_dax("IFNULL([Sales], 0)")
         self.assertIn("ISBLANK", result)
+
+    def test_nested_ifnull_to_if_isblank(self):
+        result = convert_tableau_formula_to_dax("IFNULL(IFNULL([Value], 1), 2)")
+        self.assertNotIn("IFNULL(", result)
+        self.assertNotIn("ZN(", result)
+        self.assertEqual(result.count("ISBLANK("), 3)
+        self.assertEqual(result.count("IF("), 3)
+
+    def test_nested_zn_to_if_isblank(self):
+        result = convert_tableau_formula_to_dax("ZN(ZN([Value]))")
+        self.assertNotIn("IFNULL(", result)
+        self.assertNotIn("ZN(", result)
+        self.assertEqual(result.count("ISBLANK("), 3)
+        self.assertEqual(result.count("IF("), 3)
+
+    def test_mixed_null_handling_to_if_isblank(self):
+        result = convert_tableau_formula_to_dax("ZN(IFNULL([Value], 1))")
+        self.assertNotIn("IFNULL(", result)
+        self.assertNotIn("ZN(", result)
+        self.assertEqual(result.count("ISBLANK("), 3)
+        self.assertEqual(result.count("IF("), 3)
+
+    def test_ifnull_text_literal_is_unchanged_while_real_zn_converts(self):
+        result = convert_tableau_formula_to_dax(
+            'IF [Flag] THEN "IFNULL([Value], 1)" ELSE ZN([Value]) END'
+        )
+        self.assertIn('"IFNULL([Value], 1)"', result)
+        self.assertIn("IF(ISBLANK('Table'[Value]), 0, 'Table'[Value])", result)
+
+    def test_zn_call_shaped_text_literal_is_unchanged(self):
+        formula = '"ZN([Value])"'
+        self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
+
+    def test_ifnullable_identifier_is_not_rewritten_as_ifnull(self):
+        result = convert_tableau_formula_to_dax("IFNULLABLE([Value])")
+        self.assertIn("IFNULLABLE(", result)
+        self.assertNotIn("IFNULL(", result)
 
     def test_countd_to_distinctcount(self):
         result = convert_tableau_formula_to_dax("COUNTD([Customer ID])")
@@ -1047,8 +1090,9 @@ class TestLODExpressions(unittest.TestCase):
             table_name="Orders",
             column_table_map={"Region": "Orders", "Sales": "Orders"},
         )
-        self.assertIn("CALCULATE", result)
-        self.assertIn("ALLEXCEPT", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("ALLEXCEPT", result.upper())
 
     def test_include_lod(self):
         result = convert_tableau_formula_to_dax(
@@ -1056,7 +1100,8 @@ class TestLODExpressions(unittest.TestCase):
             table_name="Orders",
             column_table_map={"Region": "Orders", "Sales": "Orders"},
         )
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
 
     def test_exclude_lod(self):
         result = convert_tableau_formula_to_dax(
@@ -1064,8 +1109,8 @@ class TestLODExpressions(unittest.TestCase):
             table_name="Orders",
             column_table_map={"Region": "Orders", "Sales": "Orders"},
         )
-        self.assertIn("CALCULATE", result)
-        self.assertIn("REMOVEFILTERS", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1174,6 +1219,78 @@ class TestTableCalcConversions(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════
 # Date Function Conversions
 # ═══════════════════════════════════════════════════════════════════════
+
+class TestDateNameParseFunctions(unittest.TestCase):
+    def test_datename_time_parts_preserve_null(self):
+        date_ref = "'Table'[Date]"
+        for part in ("hour", "minute", "second"):
+            with self.subTest(part=part):
+                result = convert_tableau_formula_to_dax(
+                    f'DATENAME("{part}", [Date])')
+                expected = (
+                    f'IF(ISBLANK({date_ref}), BLANK(), '
+                    f'FORMAT({part.upper()}({date_ref}), "0"))')
+                self.assertEqual(result, expected)
+                self.assertNotIn(f'FORMAT({date_ref}, "MMMM")', result)
+
+    def test_datename_unknown_part_is_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "DATENAME('fortnight', [Date])")
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("FORMAT(", result)
+        self.assertNotIn('"MMMM"', result)
+        self.assertIn("datename", result.lower())
+        self.assertIn("unsupported", result.lower())
+        self.assertNotIn("lod", result.lower())
+        self.assertNotIn("grain", result.lower())
+
+    def test_datename_extra_argument_is_arity_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "DATENAME('month', [Date], [Extra])")
+        self.assertIn("datename", result.lower())
+        self.assertIn("arity", result.lower())
+        self.assertNotIn("lod", result.lower())
+        self.assertNotIn("grain", result.lower())
+
+    def test_datename_text_inside_quoted_string_is_unchanged(self):
+        formula = '"DATENAME(hour, [Date])"'
+        self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
+
+    def test_datename_supported_parts(self):
+        date_ref = "'Table'[Date]"
+        expected_formats = {
+            "month": '"MMMM"',
+            "year": '"YYYY"',
+            "quarter": '"Q"',
+            "day": '"D"',
+            "weekday": '"DDDD"',
+        }
+        for part, format_string in expected_formats.items():
+            with self.subTest(part=part):
+                result = convert_tableau_formula_to_dax(
+                    f"DATENAME('{part}', [Date])")
+                self.assertEqual(
+                    result,
+                    f'IF(ISBLANK({date_ref}), BLANK(), '
+                    f'FORMAT({date_ref}, {format_string}))')
+
+    def test_datename_month_null_returns_blank(self):
+        self.assertEqual(
+            convert_tableau_formula_to_dax("DATENAME('month', NULL)"),
+            "BLANK()",
+        )
+
+    def test_dateparse_iso_date_uses_datevalue(self):
+        result = convert_tableau_formula_to_dax(
+            "DATEPARSE('yyyy-MM-dd', [DateStr])")
+        self.assertEqual(result, "DATEVALUE('Table'[DateStr])")
+        self.assertNotIn("DATEPARSE", result)
+
+    def test_dateparse_single_argument_fallback_returns_string(self):
+        result = convert_tableau_formula_to_dax("DATEPARSE([DateStr])")
+        self.assertIsInstance(result, str)
+
 
 class TestDateFunctions(unittest.TestCase):
     """Test Tableau date function → DAX conversions."""
@@ -1451,10 +1568,164 @@ class TestDateFunctionsExpanded(unittest.TestCase):
         result_lower = result.lower()
         self.assertTrue('startofmonth' in result_lower or 'month' in result_lower)
 
+    def test_datetrunc_month_today_is_scalar(self):
+        result = convert_tableau_formula_to_dax(
+            "DATETRUNC('month', TODAY())")
+
+        self.assertRegex(
+            result,
+            re.compile(
+                r"^DATE\(YEAR\(TODAY\(\)\),\s*MONTH\(TODAY\(\)\),\s*1\)$",
+                re.IGNORECASE,
+            ),
+        )
+        self.assertNotRegex(
+            result, re.compile(r"STARTOFMONTH\s*\(", re.IGNORECASE))
+
+    def test_datetrunc_year_today_is_scalar(self):
+        result = convert_tableau_formula_to_dax(
+            "DATETRUNC('year', TODAY())")
+
+        self.assertRegex(
+            result,
+            re.compile(r"^DATE\(YEAR\(TODAY\(\)\),\s*1,\s*1\)$", re.IGNORECASE),
+        )
+        self.assertNotRegex(
+            result, re.compile(r"STARTOFYEAR\s*\(", re.IGNORECASE))
+
+    def test_datetrunc_week_today_stays_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "DATETRUNC('week', TODAY())")
+
+        self.assertTrue(
+            'TODO' in result.upper() or 'BLANK()' in result.upper(), result)
+        self.assertNotRegex(
+            result,
+            re.compile(r"STARTOF\w*\s*\(|WEEKDAY\s*\(", re.IGNORECASE),
+        )
+
+    def test_datetrunc_day_proven_date_column_is_scalar_and_valid(self):
+        result = convert_tableau_formula_to_dax(
+            "DATETRUNC('day', [EventDate])",
+            table_name='Facts',
+            column_table_map={'EventDate': 'Facts'},
+            is_calc_column=True,
+            table_columns={'EventDate'},
+            date_columns={'EventDate'},
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+
+        date_ref = "'Facts'[EventDate]"
+        self.assertRegex(
+            result,
+            re.compile(
+                rf"^IF\(ISBLANK\({re.escape(date_ref)}\),\s*BLANK\(\),\s*"
+                rf"DATE\(YEAR\({re.escape(date_ref)}\),\s*"
+                rf"MONTH\({re.escape(date_ref)}\),\s*"
+                rf"DAY\({re.escape(date_ref)}\)\)\)$",
+                re.IGNORECASE,
+            ),
+        )
+        self.assertNotRegex(
+            result, re.compile(r"DATETRUNC|STARTOF\w*", re.IGNORECASE))
+
+        from powerbi_import.dax_validator import validate_dax_expression
+        self.assertEqual(validate_dax_expression(result), [])
+
+    def test_datetrunc_day_without_calc_column_date_evidence_stays_diagnostic(self):
+        cases = (
+            {
+                'is_calc_column': True,
+                'table_columns': {'EventDate'},
+            },
+            {
+                'is_calc_column': False,
+                'table_columns': {'EventDate'},
+                'date_columns': {'EventDate'},
+            },
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                result = convert_tableau_formula_to_dax(
+                    "DATETRUNC('day', [EventDate])",
+                    table_name='Facts',
+                    column_table_map={'EventDate': 'Facts'},
+                    validate_output=False,
+                    **case,
+                )
+
+                self.assertTrue(
+                    'TODO' in result.upper() or 'BLANK()' in result.upper(),
+                    result,
+                )
+                self.assertNotRegex(
+                    result, re.compile(r"DATETRUNC|STARTOF\w*", re.IGNORECASE))
+
+    def test_datetrunc_week_proven_date_column_stays_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "DATETRUNC('week', [EventDate])",
+            table_name='Facts',
+            column_table_map={'EventDate': 'Facts'},
+            is_calc_column=True,
+            table_columns={'EventDate'},
+            date_columns={'EventDate'},
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+
+        self.assertTrue(
+            'TODO' in result.upper() or 'BLANK()' in result.upper(), result)
+        self.assertNotRegex(
+            result,
+            re.compile(r"DATETRUNC|STARTOF\w*|WEEKDAY", re.IGNORECASE),
+        )
+
+    def test_datetrunc_month_makedate_literal_is_scalar(self):
+        result = convert_tableau_formula_to_dax(
+            "DATETRUNC('month', MAKEDATE(2024, 5, 6))")
+
+        self.assertRegex(
+            result,
+            r"^DATE\(YEAR\((DATE\(2024, 5, 6\))\),\s*"
+            r"MONTH\(\1\),\s*1\)$",
+        )
+        self.assertNotRegex(result, re.compile(r"STARTOFMONTH\s*\(", re.IGNORECASE))
+
+        from powerbi_import.dax_validator import validate_dax_expression
+        self.assertEqual(validate_dax_expression(result), [])
+
+    def test_datetrunc_month_makedate_dynamic_components_stays_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "DATETRUNC('month', MAKEDATE([Year], [Month], [Day]))",
+            table_name="Table",
+            table_columns=["Year", "Month", "Day"],
+            is_calc_column=False,
+        )
+
+        self.assertNotRegex(result, re.compile(r"STARTOF\w*\s*\(", re.IGNORECASE))
+        self.assertTrue(
+            "TODO" in result.upper() or "BLANK()" in result.upper(), result)
+
     def test_datepart_quarter(self):
         result = convert_tableau_formula_to_dax("DATEPART('quarter', [OrderDate])")
-        result_lower = result.lower()
-        self.assertTrue('quarter' in result_lower)
+        quarter_expression = re.compile(
+            r"IF\s*\(\s*ISBLANK\s*\((?P<date>[^()]*)\)\s*,\s*"
+            r"BLANK\s*\(\s*\)\s*,\s*INT\s*\(\s*\(?\s*"
+            r"MONTH\s*\(\s*(?P=date)\s*\)\s*-\s*1\s*\)?\s*/\s*3\s*\)\s*\+\s*1\s*\)",
+            re.IGNORECASE,
+        )
+        self.assertRegex(result, quarter_expression)
+        self.assertNotRegex(result, re.compile(r"QUARTER\s*\(", re.IGNORECASE))
+        self.assertNotIn("DATEPART", result.upper())
+
+    def test_datepart_text_inside_quoted_string_is_unchanged(self):
+        formula = '"DATEPART(quarter, example)"'
+        self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
+
+    def test_datepart_year_text_inside_quoted_string_is_unchanged(self):
+        formula = '"DATEPART(year, example)"'
+        self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
 
     def test_datepart_month(self):
         result = convert_tableau_formula_to_dax("DATEPART('month', [OrderDate])")
@@ -1481,19 +1752,148 @@ class TestDateFunctionsExpanded(unittest.TestCase):
         result_lower = result.lower()
         self.assertTrue('second' in result_lower)
 
+    def test_datepart_direct_units_preserve_null(self):
+        units = ('year', 'month', 'day', 'hour', 'minute', 'second')
+        null_guard = re.compile(
+            r"IF\s*\(\s*ISBLANK\s*\(\s*(?:NULL|BLANK\s*\(\s*\))\s*\)\s*,\s*"
+            r"BLANK\s*\(\s*\)\s*,",
+            re.IGNORECASE,
+        )
+
+        for unit in units:
+            with self.subTest(unit=unit):
+                result = convert_tableau_formula_to_dax(
+                    f"DATEPART('{unit}', NULL)")
+                if result.strip().upper() != "BLANK()":
+                    self.assertRegex(result, null_guard)
+                self.assertNotIn("DATEPART", result.upper())
+
+    def test_datepart_weekday_is_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "DATEPART('weekday', [OrderDate])")
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("WEEKDAY", result.upper())
+        self.assertNotIn("DATEPART", result.upper())
+
     def test_datepart_week(self):
         result = convert_tableau_formula_to_dax("DATEPART('week', [OrderDate])")
-        result_lower = result.lower()
-        self.assertTrue('weeknum' in result_lower or 'week' in result_lower)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("WEEKNUM", result)
+        self.assertNotIn("DATEPART", result)
+
+    def test_datepart_iso_week_is_diagnostic(self):
+        result = convert_tableau_formula_to_dax("DATEPART('iso-week', [D])")
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotRegex(
+            result, re.compile(r"DATEPART|WEEKNUM|WEEKDAY", re.IGNORECASE))
 
     def test_makedate(self):
         result = convert_tableau_formula_to_dax("MAKEDATE(2023, 1, 15)")
         self.assertIn("DATE", result)
 
     def test_makedatetime(self):
-        result = convert_tableau_formula_to_dax("MAKEDATETIME(#2023-01-15#, #10:30:00#)")
-        # Should produce something date-related
-        self.assertIsInstance(result, str)
+        result = convert_tableau_formula_to_dax(
+            "MAKEDATETIME(MAKEDATE(2023, 1, 15), MAKETIME(10, 30, 0))")
+        self.assertRegex(
+            result,
+            re.compile(
+                r"^IF\(OR\(ISBLANK\(DATE\(2023,\s*1,\s*15\)\),\s*"
+                r"ISBLANK\(TIME\(10,\s*30,\s*0\)\)\),\s*BLANK\(\),\s*"
+                r"\(DATE\(2023,\s*1,\s*15\)\s*\+\s*"
+                r"TIME\(10,\s*30,\s*0\)\)\)$",
+                re.IGNORECASE,
+            ),
+        )
+        self.assertNotIn("MAKEDATETIME", result)
+        self.assertEqual(result.count("DATE(2023, 1, 15)"), 2)
+        self.assertEqual(result.count("TIME(10, 30, 0)"), 2)
+
+    def test_makedatetime_null_component_returns_blank(self):
+        for expression in (
+            "MAKEDATETIME(NULL, MAKETIME(10, 30, 0))",
+            "MAKEDATETIME(MAKEDATE(2024, 1, 15), NULL)",
+        ):
+            with self.subTest(expression=expression):
+                result = convert_tableau_formula_to_dax(expression)
+                self.assertEqual(result, "BLANK()")
+
+    def test_makedatetime_calc_column_null_propagates_resolved_components(self):
+        result = convert_tableau_formula_to_dax(
+            "MAKEDATETIME([EventDate], [EventTime])",
+            table_name='Facts',
+            column_table_map={'EventDate': 'Facts', 'EventTime': 'Facts'},
+            is_calc_column=True,
+            table_columns={'EventDate', 'EventTime'},
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+
+        self.assertRegex(
+            result,
+            re.compile(
+                r"^IF\(OR\(ISBLANK\('Facts'\[EventDate\]\),\s*"
+                r"ISBLANK\('Facts'\[EventTime\]\)\),\s*BLANK\(\),\s*"
+                r"\('Facts'\[EventDate\]\s*\+\s*"
+                r"'Facts'\[EventTime\]\)\)$",
+                re.IGNORECASE,
+            ),
+        )
+        self.assertEqual(result.count("'Facts'[EventDate]"), 2)
+        self.assertEqual(result.count("'Facts'[EventTime]"), 2)
+
+    def test_makedatetime_measure_without_row_scope_stays_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "MAKEDATETIME([EventDate], [EventTime])",
+            table_name='Facts',
+            column_table_map={'EventDate': 'Facts', 'EventTime': 'Facts'},
+            is_calc_column=False,
+            table_columns={'EventDate', 'EventTime'},
+            validate_output=True,
+            fallback_on_invalid=True,
+        )
+
+        self.assertIn('TODO', result.upper(), result)
+        self.assertIn('BLANK()', result.upper(), result)
+        self.assertNotRegex(
+            result,
+            re.compile(r"\b(?:SUMX|MAXX|SELECTEDVALUE)\s*\(", re.IGNORECASE),
+        )
+
+    def test_makedatetime_nested_call_stays_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "MAKEDATETIME(MAKEDATETIME(MAKEDATE(2024, 1, 15), "
+            "MAKETIME(10, 30, 0)), MAKETIME(11, 45, 0))")
+
+        self.assertNotIn("TODO", result.upper(), result)
+        self.assertNotIn("MAKEDATETIME", result)
+        self.assertIn("DATE(2024, 1, 15)", result)
+        self.assertIn("TIME(10, 30, 0)", result)
+        self.assertIn("TIME(11, 45, 0)", result)
+        self.assertEqual(result.count("IF(OR("), 3, result)
+        self.assertEqual(result.count("ISBLANK("), 6, result)
+
+    def test_makedatetime_parenthesized_as_subtrahend(self):
+        result = convert_tableau_formula_to_dax(
+            "[EndDateTime] - MAKEDATETIME(MAKEDATE(2024, 1, 15), MAKETIME(10, 30, 0))",
+            table_name="Facts",
+            column_table_map={"EndDateTime": "Facts"},
+        )
+
+        self.assertRegex(
+            result,
+            re.compile(
+                r"^'Facts'\[EndDateTime\]\s*-\s*\(?\s*"
+                r"IF\(OR\(ISBLANK\(DATE\(2024,\s*1,\s*15\)\),\s*"
+                r"ISBLANK\(TIME\(10,\s*30,\s*0\)\)\),\s*BLANK\(\),\s*"
+                r"\(DATE\(2024,\s*1,\s*15\)\s*\+\s*"
+                r"TIME\(10,\s*30,\s*0\)\)\)\s*\)?$",
+                re.IGNORECASE,
+            ),
+        )
+        self.assertNotIn("MAKEDATETIME", result)
 
 
 class TestStatsFunctionsExpanded(unittest.TestCase):
@@ -1510,6 +1910,28 @@ class TestStatsFunctionsExpanded(unittest.TestCase):
     def test_percentile(self):
         result = convert_tableau_formula_to_dax("PERCENTILE([Sales], 0.95)")
         self.assertIn("PERCENTILE", result)
+
+    def test_percentile_text_literal_is_unchanged(self):
+        formula = '"PERCENTILE([Value], 0.5)"'
+        self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
+
+    def test_percentile_direct_physical_column_resolves(self):
+        result = convert_tableau_formula_to_dax(
+            "PERCENTILE([Value], 0.5)",
+            table_name="Facts",
+            column_table_map={"Value": "Facts"},
+        )
+
+        self.assertIn("PERCENTILE.INC", result)
+        self.assertIn("'Facts'[Value]", result)
+
+    def test_percentile_expression_without_row_metadata_stays_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "PERCENTILE([Value] * [Weight], 0.5)"
+        )
+
+        self.assertTrue("TODO" in result.upper() or "BLANK()" in result.upper(), result)
+        self.assertNotIn("PERCENTILE.INC", result)
 
     def test_corr(self):
         result = convert_tableau_formula_to_dax("CORR([Sales], [Profit])")
@@ -1559,6 +1981,11 @@ class TestSpecialConverterFunctions(unittest.TestCase):
     def test_find(self):
         result = convert_tableau_formula_to_dax("FIND([Name], 'test')")
         self.assertIn("FIND", result)
+
+    def test_find_nested_call_in_start_position(self):
+        result = convert_tableau_formula_to_dax('FIND("abc", "a", FIND("bc", "b"))')
+        self.assertEqual(
+            result, 'FIND("a", "abc", FIND("b", "bc", 1, 0), 0)')
 
     def test_isdate(self):
         result = convert_tableau_formula_to_dax("ISDATE([Val])")

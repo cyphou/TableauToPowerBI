@@ -7,9 +7,68 @@ Fabric-native artifacts. Static local validation is the release gate. Semantic
 execution, refresh and deployment evidence remain `not_run` unless an
 authorized environment proves otherwise.
 
-## Current priorities — 2026-11-13
+## Current priorities — 2026-11-14
 
-### Current worktree evidence — regression pass, corpus gate failed
+### Follow-up corrections — 2026-11-14
+
+- **Formula analysis follow-up:** bounded binary MIN/MAX over a proven local
+  physical numeric column and a non-null numeric literal now retain row-level
+  classification, null propagation and consuming column aggregates. Unary
+  aggregates and LOD/grain guards remain unchanged. Numeric constants and
+  transitive aliases resolve within datasource/raw calculation identity,
+  including homonymous constants with different values. Synthetic regressions
+  cover source order, ownership, conflicts and transitive consumers; the focused
+  identity/model selection passed 417 tests. In-memory private replay confirms
+  two row-grain diagnostics removed across two snapshots of one source case,
+  not a batch-wide status improvement. Native refresh and value parity remain
+  `not_run`; MAKEPOINT and other unproved grain/relationship cases remain open.
+- **PBIR range literals:** pass the resolved model column type to both range
+  bounds. Public regressions cover numeric-looking/text values, dates, quoting
+  and missing bounds. One regenerated file-backed workbook completed a verified
+  Power BI refresh; the two previously failing charts drew in the captured page.
+  This is bounded evidence, not corpus acceptance or semantic-parity proof.
+- **Projection aliases:** disambiguate raw and aggregated query projections
+  before generating general/data-point formatting selectors, preserving strict
+  refusal for genuinely ambiguous references. Four selector-collision failures
+  now generate diagnostic PBIPs; they remain partial with two/three unrelated
+  DAX grain blockers. Duplicate input copies were not independently replayed.
+- **REST API rate limiting:** enforce the per-IP batch quota before reading the
+  request body, use a monotonic sliding-window clock, and advertise HTTP 429 in
+  OpenAPI. The quota remains process-local and distinct from Tableau throttling.
+  Focused API and documentation tests cover the contract.
+- **Remaining comparison gate:** the paired run stays `failed` when generated
+  report pages lack Tableau counterparts. Do not weaken the mapping contract or
+  claim parity from pixel captures. Handling generated-only summary pages is a
+  separate contract decision.
+
+### PBIR failure corrections — bounded follow-up, 2026-11-13 (historical)
+
+**Delivered locally:** range-filter literals now respect declared string types,
+including numeric- and date-looking text. Cross-role projection references are
+disambiguated before general/data-point formatting selectors are constructed;
+the actual expressions and strict ambiguity refusals remain intact. Twelve
+synthetic regression tests cover both fixes, including negative controls.
+The focused report/native-reference/golden/openability run passed **626 tests**.
+The full-suite result below predates these fixes; no new full-suite or overall
+corpus result is claimed.
+
+**Native evidence:** one authorized file-backed workbook was regenerated and
+refreshed successfully; its two formerly filter-failing charts now draw in the
+verified page capture. One source page and two target pages were captured, with
+one pixel pair compared. Strict comparison status remains `failed` because the
+generated summary page has no source counterpart; the contract is unchanged. This is
+not a Tableau-to-Power BI value-parity or complete visual-fidelity verdict.
+
+**Generation evidence:** two distinct selector-blocked inputs now produce
+diagnostic PBIPs instead of stopping on alias collisions. They remain partial
+and quality FAIL, with respectively two and three DAX grain blockers. Duplicate
+input copies were not independently replayed. Other source/extraction, Hyper,
+refresh and Tableau-dialog failures remain open; no safeguard was relaxed.
+Changing how generated-only pages affect comparison status is a separate
+contract decision, not part of these corrections. Private inputs, identities
+and screenshots stay outside the repository.
+
+### Regression and corpus baseline — 2026-11-13
 
 **Current local evidence (2026-11-13):** complete uninterrupted regression:
 **15,063 passed, 108 skipped, 1 xfailed**, across **15,172 collected tests**,
@@ -50,6 +109,51 @@ Static regression checks cover this feature. They do not prove native
 execution, value or source parity, refresh, saved state or deployment; those
 remain `not_run` without separate authorized evidence. Local delivery does not
 close the failed corpus gate or establish native acceptance.
+
+### FIXED report follow-up — open plan, 2026-11-13
+
+1. **Outcome:** answer "verifie le rapport et prepare le plan si besoin" with
+  a bounded evidence plan, not a new conversion policy. Guardian pre-update:
+  **WARN**, approved plan location here; the user's earlier "oui" authorized
+  exact first, then warned probable approximation, then diagnostic `BLANK()`
+  for missing/ambiguous evidence. The delivered bounds above remain unchanged.
+2. **Current evidence:** the 13 November report measured `d6f4b34`, not current
+  `e74509a`. Reviewer found no converter regression; the three agent instructions
+  are already updated. Latest reported focused run: **85 passed in 12.05s** in
+  `tests/test_reported_dax_semantics.py`, not a new full-suite measurement.
+  Its XML/ordinary-batch test (line 1846) uses a direct FIXED on a `sum:` pill,
+  without view dimensions; persisted TMDL asserts nonblank `SUMX/VALUES/MIN`,
+  warning/`MigrationNote`, no `ALLEXCEPT`, and static openability. This covers
+  the three static R4 criteria: Tableau `SUM([calc])` often is a `sum:` pill.
+  A separate one-hop `SUM([Fixed])` consumer is covered at TMDL level (line 2137),
+  not XML/CLI. Extending that boundary is coverage work, not a proven defect.
+3. **Smallest slice / open increments:** (A) @tester extends that existing file
+  and reuses its CLI fixture with a separate same-datasource aggregate consumer
+  and matching explicit shelf prefix: SUM/AVG/MIN/MAX iterators and single/multi
+  physical keys as needed. Retain rejection controls for absent evidence,
+  inferred/default SUM, ATTR, conflicting datasources/shelves, and exact-first
+  proof requirements. Source-owner edits are conditional on a new failing test.
+  (B) @extractor/@semantic classify an authorized privately supplied workbook:
+  **117 fields, 58 SUM, 41 AVG, 18 ATTR, 19 FIXED + 3 dependencies** are reported,
+  not independently verified. Record eligible/unsupported/conflicting/unknown
+  ownership outcomes; do not promise all 19 succeed or commit private data.
+  (C) @tester/@reviewer/@evidence compare the reported **487** through authorized
+  Tableau/Power BI queries with matching context, filters and totals; no app
+  launch by default. (D) Communication: parent confirms six pasted sections
+  received, not the full earlier 09/12 November reports, which were not supplied.
+4. **Dependencies:** A precedes B's cross-stage acceptance; C needs explicit
+  native authorization and accessible data. D preserves report provenance.
+  @extractor/@semantic own extraction/model repairs; @dax owns converter repairs.
+5. **Validation:** run the existing focused 85-test file after A; inspect persisted
+  callee/consumer iterators, warnings and every key, without `BLANK()` or
+  `ALLEXCEPT` for eligible cases, plus rejection/exact-path controls. This static
+  gate does not prove 487 in either engine. Retain the broader release gate below.
+6. **Risks and non-goals:** static openability or recoverability is not validated
+  semantic quality. Do not weaken security, Hyper guards or verified-exact proof;
+  native execution, filters/totals and private-corpus acceptance remain unverified.
+7. **Commit boundary:** this request changes only `docs/ROADMAP.md`; no source,
+  tests, native actions, commit or push. Future A groups its public tests with
+  source fixes only if required; B/C evidence stays private and outside commits.
 
 ### Next increment — current-corpus correctness
 

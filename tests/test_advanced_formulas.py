@@ -132,6 +132,20 @@ class TestLookup:
         )
         assert "OFFSET(2" in result
 
+    def test_lookup_quoted_closing_paren_preserves_expression_and_offset(self):
+        source = 'LOOKUP(IF([Flag], ")", "x"), 1)'
+        result = _convert_lookup(source, "Facts")
+        assert result == 'CALCULATE(IF([Flag], ")", "x"), OFFSET(1, ALLSELECTED(\'Facts\'), ORDERBY([Value])))'
+
+    def test_lookup_literal_is_unchanged(self):
+        source = '"LOOKUP([Value], 1)"'
+        assert _convert_lookup(source, "Facts") == source
+
+    def test_lookup_nested_calls_are_both_converted(self):
+        result = _convert_lookup("LOOKUP(LOOKUP([Value], 1), -1)", "Facts")
+        assert "LOOKUP(" not in result
+        assert result.count("OFFSET(") == 2
+
     def test_lookup_preserves_surrounding(self):
         result = _convert_lookup("1 + 2", "T")
         assert result == "1 + 2"

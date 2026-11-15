@@ -61,8 +61,8 @@ MAX_BATCH_ENTRIES = 100
 MAX_BATCH_EXPANDED_SIZE = 2 * 1024 * 1024 * 1024
 JOB_TTL_SECONDS = 24 * 3600  # 24 hours
 
-# Rate limiting: max requests per IP within a sliding window
-_RATE_LIMIT_MAX = 10  # max jobs per IP per window
+# Rate limiting: max batch submissions per IP within a sliding window
+_RATE_LIMIT_MAX = 10  # max requests per IP per window
 _RATE_LIMIT_WINDOW = 60  # seconds
 _rate_tracker = {}  # ip -> deque of timestamps
 _rate_lock = threading.Lock()
@@ -208,13 +208,13 @@ def _purge_stale_jobs():
 
 def _check_rate_limit(client_ip):
     """Return True if the client IP is within rate limits."""
-    now = time.time()
+    now = time.monotonic()
     with _rate_lock:
         if client_ip not in _rate_tracker:
             _rate_tracker[client_ip] = collections.deque()
         dq = _rate_tracker[client_ip]
         # Purge old entries
-        while dq and dq[0] < now - _RATE_LIMIT_WINDOW:
+        while dq and dq[0] <= now - _RATE_LIMIT_WINDOW:
             dq.popleft()
         if len(dq) >= _RATE_LIMIT_MAX:
             return False
@@ -410,6 +410,7 @@ def _build_openapi_spec() -> dict:
                         '202': {'description': 'Batch created'},
                         '400': {'description': 'No valid workbooks in ZIP'},
                         '401': {'description': 'Unauthorized'},
+                        '429': {'description': 'Per-IP rate limit or concurrent job capacity exceeded'},
                     },
                 },
             },
@@ -698,6 +699,12 @@ class MigrationHandler(BaseHTTPRequestHandler):
 
         # POST /migrate/batch — Sprint 176
         if path == '/migrate/batch':
+            # Reject over-limit submissions before reading or parsing the ZIP body.
+            client_ip = self.client_address[0] if self.client_address else 'unknown'
+            if not _check_rate_limit(client_ip):
+                self._send_error(429, 'Too many requests. Please try again later.')
+                return
+
             try:
                 batch_options = _migration_options(self._get_query_params())
                 content_length = int(self.headers.get('Content-Length', 0))
@@ -768,13 +775,6 @@ class MigrationHandler(BaseHTTPRequestHandler):
                              if job['status'] in ('queued', 'running'))
             if active + len(workbook_names) > MAX_CONCURRENT_JOBS:
                 self._send_error(429, 'Batch exceeds concurrent job capacity')
-                zf.close()
-                return
-
-            # Rate limit
-            client_ip = self.client_address[0] if self.client_address else 'unknown'
-            if not _check_rate_limit(client_ip):
-                self._send_error(429, 'Too many requests. Please try again later.')
                 zf.close()
                 return
 

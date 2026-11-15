@@ -27,9 +27,14 @@ from powerbi_import.tmdl_dax_postprocess import (
 from powerbi_import.tmdl_generator import (
     _build_semantic_model,
     _build_table,
+    _collect_semantic_context,
+    _create_semantic_tables,
     generate_tmdl,
 )
-from tableau_export.dax_converter import convert_tableau_formula_to_dax
+from tableau_export.dax_converter import (
+    convert_tableau_formula_to_dax,
+    is_supported_scalar_numeric_minmax,
+)
 from tableau_export.worksheet_extractor import extract_worksheet_fields
 
 _FALLBACK = "TODO: DAX conversion validation failed"
@@ -496,9 +501,156 @@ class TestReportedRowGrain(unittest.TestCase):
         self.assertEqual(_EmittedDax(expression).evaluate({
             "Zone": [{"Facture": 453}], "Menage": list(_S01_HOUSEHOLDS)}), 0)
 
+    def test_nullable_string_functions_in_conditions_propagate_blank(self):
+        cases = (
+              ("IF LEFT([Code], 1) = \"X\" THEN 1 ELSE 0 END",
+               "LEFT(__TableauNullable"),
+            ("IF RIGHT([Code], 1) = \"X\" THEN 1 ELSE 0 END",
+             "RIGHT(__TableauNullable"),
+              ("IF MID([Code], 1, 1) = \"X\" THEN 1 ELSE 0 END",
+               "MID(__TableauNullable"),
+              ("IF UPPER([Code]) = \"X\" THEN 1 ELSE 0 END",
+               "UPPER(__TableauNullable"),
+            ("IF LOWER([Code]) = \"x\" THEN 1 ELSE 0 END",
+             "LOWER(__TableauNullable"),
+              ("IF TRIM([Code]) = \"X\" THEN 1 ELSE 0 END",
+               "TRIM(__TableauNullable"),
+              ("IF LEN([Code]) = 1 THEN 1 ELSE 0 END",
+               "LEN(__TableauNullable"),
+            ("IF STR([Amount]) = \"1\" THEN 1 ELSE 0 END",
+             'FORMAT(__TableauNullable'),
+        )
+        for formula, expected_call in cases:
+            with self.subTest(formula=formula):
+                expression = convert_tableau_formula_to_dax(
+                    formula, table_name="T", table_columns={"Code", "Amount"},
+                    column_table_map={"Code": "T", "Amount": "T"},
+                    is_calc_column=True, calc_datatype="real",
+                    validate_output=True, fallback_on_invalid=True)
+                self.assertNotIn(_FALLBACK, expression)
+                self.assertIn(expected_call, expression)
+                self.assertIn("RETURN IF(ISBLANK(", expression)
+                self.assertIn("ISBLANK", expression)
+                self.assertIn("BLANK()", expression)
+
+    def test_nullable_string_functions_reject_unsupported_arity(self):
+        for formula in (
+            "IF RIGHT([Code]) = \"X\" THEN 1 ELSE 0 END",
+            "IF MID([Code], 1) = \"X\" THEN 1 ELSE 0 END",
+            "IF LOWER([Code], [Code]) = \"X\" THEN 1 ELSE 0 END",
+        ):
+            with self.subTest(formula=formula):
+                expression = convert_tableau_formula_to_dax(
+                    formula, table_name="T", table_columns={"Code"},
+                    column_table_map={"Code": "T"}, is_calc_column=True,
+                    calc_datatype="real", validate_output=True,
+                    fallback_on_invalid=True)
+                _assert_unsupported(self, expression, "grammar")
+
 
 class TestReportedFixedGrainStatic(unittest.TestCase):
     """Defects 4--5: exact, annotated approximation, or diagnostic fallback."""
+
+    def test_include_compiles_at_explicit_shelf_grain(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ INCLUDE [Region] : SUM([Sales]) }",
+            table_name="Fact",
+            table_columns={"Region", "Sales"},
+            numeric_columns={"Sales"},
+            column_table_map={"Region": "Fact", "Sales": "Fact"},
+            lod_shelf_aggregation="SUM")
+        self.assertEqual(
+            expression,
+            "/* shelf (sum:) INCLUDE approximation; source filters and totals "
+            "unverified */ SUMX(VALUES('Fact'[Region]), "
+            "CALCULATE(SUM('Fact'[Sales])))")
+
+    def test_include_expression_uses_row_iterator_for_physical_product(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        expression = convert_tableau_formula_to_dax(
+            "{ INCLUDE [Channel] : SUM([Quantity] * [UnitPrice]) }",
+            table_name="Fact",
+            table_columns={"Channel", "Quantity", "UnitPrice"},
+            numeric_columns={"Quantity", "UnitPrice"},
+            column_table_map={
+                "Channel": "Fact", "Quantity": "Fact", "UnitPrice": "Fact"},
+            lod_shelf_aggregation="SUM", validate_output=True)
+        self.assertIn("shelf (sum:) INCLUDE approximation", expression)
+        self.assertIn("SUMX(VALUES('Fact'[Channel])", expression)
+        self.assertIn("CALCULATE(SUMX('Fact',", expression)
+        self.assertEqual(validate_dax_expression(expression), [])
+
+    def test_include_preserves_every_physical_key(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ INCLUDE [Region], [Category] : SUM([Sales]) }",
+            table_name="Fact",
+            table_columns={"Region", "Category", "Sales"},
+            numeric_columns={"Sales"},
+            column_table_map={
+                "Region": "Fact", "Category": "Fact", "Sales": "Fact"},
+            lod_shelf_aggregation="SUM")
+        self.assertEqual(
+            expression,
+            "/* shelf (sum:) INCLUDE approximation; source filters and totals "
+            "unverified */ SUMX(SUMMARIZE('Fact', 'Fact'[Region], "
+            "'Fact'[Category]), CALCULATE(SUM('Fact'[Sales])))")
+
+    def test_exclude_removes_all_physical_keys(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ EXCLUDE [Region], [Category] : SUM([Sales]) }",
+            table_name="Fact",
+            table_columns={"Region", "Category", "Sales"},
+            numeric_columns={"Sales"},
+            column_table_map={
+                "Region": "Fact", "Category": "Fact", "Sales": "Fact"})
+        self.assertEqual(
+            expression,
+            "/* EXCLUDE dimension-filter approximation; totals unverified */ "
+            "CALCULATE(SUM('Fact'[Sales]), REMOVEFILTERS('Fact'[Region], "
+            "'Fact'[Category]))")
+
+    def test_exclude_removes_only_a_local_physical_dimension(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ EXCLUDE [Region] : SUM([Sales]) }",
+            table_name="Fact",
+            table_columns={"Region", "Sales"},
+            numeric_columns={"Sales"},
+            column_table_map={"Region": "Fact", "Sales": "Fact"})
+        self.assertEqual(
+            expression,
+            "/* EXCLUDE dimension-filter approximation; totals unverified */ "
+            "CALCULATE(SUM('Fact'[Sales]), REMOVEFILTERS('Fact'[Region]))")
+
+    def test_include_exclude_fail_closed_without_proven_grain(self):
+        cases = (
+            ("{ INCLUDE [Region] : SUM([Sales]) }", {
+                "lod_shelf_aggregation": None}),
+            ("SUM({ INCLUDE [Region] : SUM([Sales]) })", {
+                "lod_shelf_aggregation": "AVG"}),
+            ("{ INCLUDE [Region] : SUM([Sales]) }", {
+                "lod_shelf_aggregation": "SUM", "numeric_columns": {"Region"}}),
+            ("{ INCLUDE [Region] : SUM([Sales]) }", {
+                "lod_shelf_aggregation": "SUM",
+                "column_table_map": {"Region": "Other", "Sales": "Fact"}}),
+            ("{ INCLUDE [Region], [Region] : SUM([Sales]) }", {}),
+            ("{ EXCLUDE [Region] : SUM([Sales]) }", {
+                "column_table_map": {"Region": "Other", "Sales": "Fact"}}),
+            ("SUM({ EXCLUDE [Region] : SUM([Sales]) })", {}),
+        )
+        for formula, overrides in cases:
+            with self.subTest(formula=formula, overrides=overrides):
+                options = {
+                    "table_name": "Fact",
+                    "table_columns": {"Region", "Sales"},
+                    "numeric_columns": {"Sales"},
+                    "column_table_map": {"Region": "Fact", "Sales": "Fact"},
+                    "lod_shelf_aggregation": "SUM",
+                }
+                options.update(overrides)
+                _assert_unsupported(
+                    self, convert_tableau_formula_to_dax(formula, **options),
+                    "INCLUDE" if "INCLUDE" in formula else "EXCLUDE")
 
     @staticmethod
     def _fixed_scope():
@@ -1201,6 +1353,774 @@ class TestMultiReferenceDependencyIdentity(unittest.TestCase):
         self.assertEqual(validate_dax_expression(consumer), [])
         self.assertIn(f'[{actual["[id]"]["name"]}]', consumer)
         self.assertIn(f'[{actual["[other]"]["name"]}]', consumer)
+
+
+class TestTypedYearExtrema(unittest.TestCase):
+    @staticmethod
+    def _convert(formula, **overrides):
+        options = {
+            "table_name": "Records", "table_columns": {"EventDate", "Amount"},
+            "column_table_map": {"EventDate": "Records", "Amount": "Records"},
+            "date_columns": {"EventDate"}, "calc_datatype": "string",
+            "validate_output": True, "fallback_on_invalid": True,
+        }
+        options.update(overrides)
+        return convert_tableau_formula_to_dax(formula, **options)
+
+    def _assert_guarded_year(self, expression, aggregate, table="Records",
+                             column="EventDate"):
+        reference = "'" + table.replace("'", "''") + f"'[{column}]"
+        extrema = rf"{aggregate}\s*\(\s*{re.escape(reference)}\s*\)"
+        self.assertNotIn("TODO", expression, expression)
+        self.assertRegex(
+            expression,
+            rf"IF\s*\(\s*ISBLANK\s*\(\s*{extrema}\s*\)\s*,\s*"
+            rf"BLANK\s*\(\s*\)\s*,\s*YEAR\s*\(\s*{extrema}\s*\)\s*\)",
+        )
+        self.assertNotRegex(expression, rf"{aggregate}\s*\(\s*YEAR\b")
+        self.assertNotIn("1900", expression)
+        self.assertNotIn("COALESCE", expression)
+
+    def test_typed_year_extrema_preserve_null_guard_inside_string_and_subtraction(self):
+        for aggregate in ("MIN", "MAX"):
+            for container in (set, list, frozenset, tuple):
+                for wrapper in ("{}", "STR({})", "STR({} - 1)"):
+                    with self.subTest(aggregate=aggregate, container=container,
+                                      wrapper=wrapper):
+                        expression = self._convert(
+                            wrapper.format(f"{aggregate}(YEAR([EventDate]))"),
+                            date_columns=container(["EventDate"]))
+                        self._assert_guarded_year(expression, aggregate)
+                        if wrapper.startswith("STR"):
+                            self.assertIn("FORMAT(", expression)
+                        if "- 1" in wrapper:
+                            self.assertIn("VAR __TableauNullable1 = 1", expression)
+                            self.assertIn("ISBLANK(__TableauNullable0) || "
+                                          "ISBLANK(__TableauNullable1), BLANK()", expression)
+                            self.assertIn("(__TableauNullable0 - __TableauNullable1)",
+                                          expression)
+
+    def test_datetrunc_extrema_lower_to_guarded_scalar_dates(self):
+        granularities = ("year", "quarter", "month")
+        for granularity in granularities:
+            for aggregate in ("MIN", "MAX"):
+                with self.subTest(granularity=granularity, aggregate=aggregate):
+                    expression = self._convert(
+                        f"DATETRUNC('{granularity}', {aggregate}([EventDate]))")
+                    reference = "'Records'[EventDate]"
+                    extrema = rf"{aggregate}\s*\(\s*{re.escape(reference)}\s*\)"
+
+                    self.assertNotIn("TODO", expression, expression)
+                    assignment = re.search(
+                        rf"\bVAR\s+([A-Za-z_]\w*)\s*=\s*{extrema}",
+                        expression,
+                        re.IGNORECASE,
+                    )
+                    self.assertIsNotNone(assignment, expression)
+                    variable = assignment.group(1)
+                    self.assertEqual(
+                        len(re.findall(extrema, expression, re.IGNORECASE)), 1,
+                        expression,
+                    )
+                    self.assertRegex(
+                        expression,
+                        rf"IF\s*\(\s*ISBLANK\s*\(\s*{re.escape(variable)}\s*\)"
+                        rf"\s*,\s*BLANK\s*\(\s*\)\s*,",
+                    )
+                    self.assertRegex(expression, r"\bDATE\s*\(")
+                    self.assertRegex(
+                        expression,
+                        rf"\bYEAR\s*\(\s*{re.escape(variable)}\s*\)",
+                    )
+                    if granularity in ("quarter", "month"):
+                        self.assertRegex(
+                            expression,
+                            rf"\bMONTH\s*\(\s*{re.escape(variable)}\s*\)",
+                        )
+                    if granularity == "year":
+                        self.assertRegex(
+                            expression,
+                            rf"DATE\s*\(\s*YEAR\s*\(\s*{re.escape(variable)}\s*\)"
+                            rf"\s*,\s*1\s*,\s*1\s*\)",
+                        )
+                    self.assertNotRegex(
+                        expression, r"\bSTARTOF(?:YEAR|QUARTER|MONTH)\s*\(|\bQUARTER\s*\(")
+
+    def test_datetrunc_extrema_without_date_or_extrema_proof_remain_diagnostic(self):
+        cases = (
+            ("DATETRUNC('year', MIN([EventDate]))", {"date_columns": None}),
+            ("DATETRUNC('year', SUM([EventDate]))", {}),
+        )
+        for formula, overrides in cases:
+            with self.subTest(formula=formula, overrides=overrides):
+                _assert_unsupported(
+                    self, self._convert(formula, **overrides), "grain")
+
+    def test_local_owner_and_escaped_table_name_are_preserved(self):
+        for table in ("Records", "Records' Archive"):
+            with self.subTest(table=table):
+                owner = table.replace("'", "''")
+                expression = self._convert(
+                    f"STR(MAX(YEAR('{owner}'[EventDate])))",
+                    table_name=table,
+                    column_table_map={"EventDate": table})
+                self._assert_guarded_year(expression, "MAX", table)
+
+    def test_missing_or_invalid_date_proof_remains_diagnostic(self):
+        for proof in (None, set(), "EventDate", {"EventDate": "date"},
+                      True, 1, ["EventDate", None], ["EventDate", ""],
+                      ["EventDate", 1], {"Amount"}):
+            with self.subTest(proof=proof):
+                _assert_unsupported(
+                    self, self._convert("MAX(YEAR([EventDate]))", date_columns=proof),
+                    "grain")
+
+    def test_no_physical_column_proof_does_not_enable_lowering(self):
+        for columns in (set(), {"Amount"}):
+            with self.subTest(columns=columns):
+                _assert_unsupported(
+                    self, self._convert("MAX(YEAR([EventDate]))", table_columns=columns))
+
+    def test_foreign_owner_and_calculation_measure_collisions_remain_diagnostic(self):
+        cases = (
+            ("MAX(YEAR('OtherRecords'[EventDate]))", {}),
+            ("MAX(YEAR([EventDate]))", {
+                "column_table_map": {"EventDate": "OtherRecords"}}),
+            ("MAX(YEAR([EventDate]))", {"measure_names": {"EventDate"}}),
+            ("MAX(YEAR([EventDate]))", {"calc_map": {"EventDate": "[Amount] + 1"}}),
+        )
+        for formula, overrides in cases:
+            with self.subTest(formula=formula, overrides=overrides):
+                _assert_unsupported(self, self._convert(formula, **overrides))
+
+    def test_date_proof_does_not_authorize_nonmonotone_or_row_grain_rewrites(self):
+        for formula in (
+            "MAX(MONTH([EventDate]))", "MIN(DAY([EventDate]))",
+            "SUM(IF [Amount] > 0 THEN [Amount] ELSE 0 END)",
+            "{ FIXED [EventDate] : SUM([Amount]) }",
+        ):
+            with self.subTest(formula=formula):
+                _assert_unsupported(self, self._convert(formula), "grain")
+
+    @staticmethod
+    def _datasource(owner, table, datatype):
+        column = {"name": "EventDate", "caption": "Date"}
+        if datatype is not None:
+            column["datatype"] = datatype
+        calculations = [
+            {"name": "[YearLabel]", "caption": "Year Label",
+             "formula": "STR(MAX(YEAR([EventDate])))"},
+            {"name": "[PriorYearLabel]", "caption": "Prior Year Label",
+             "formula": "STR(MAX(YEAR([EventDate])) - 1)"},
+            {"name": "[LabelConsumer]", "caption": "Label Consumer",
+             "formula": '[YearLabel] + " / " + [PriorYearLabel]'},
+        ]
+        for calculation in calculations:
+            calculation.update(role="measure", datatype="string",
+                               datasource_name=owner)
+        return {
+            "name": owner, "caption": owner,
+            "connection": {"type": "sqlserver", "details": {
+                "server": "synthetic.invalid", "database": "synthetic"}},
+            "tables": [{"name": table, "columns": [column]}],
+            "calculations": calculations, "columns": [], "relationships": [],
+            "connection_map": {},
+        }
+
+    @staticmethod
+    def _generate_tables(datasources):
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary) / "Synthetic.SemanticModel"
+            generate_tmdl(datasources, "Synthetic", {}, str(model_dir),
+                          parameterize=False)
+            return {path.stem: path.read_text(encoding="utf-8")
+                    for path in (model_dir / "definition" / "tables").glob("*.tmdl")}
+
+    def _assert_generated_year_labels(self, content, table, supported, suffix=""):
+        for caption in ("Year Label", "Prior Year Label", "Label Consumer"):
+            declaration = re.search(
+                rf"(?m)^\tmeasure '{re.escape(caption + suffix)}' =([^\n]*)", content)
+            self.assertIsNotNone(declaration, content)
+            expression = declaration.group(1).strip()
+            if supported:
+                self.assertNotIn("TODO", expression, expression)
+                self.assertNotEqual(expression, "BLANK()")
+                if caption != "Label Consumer":
+                    self._assert_guarded_year(expression, "MAX", table, "Date")
+                    self.assertIn("FORMAT(", expression)
+                else:
+                    self.assertIn("[Year Label]", expression)
+                    self.assertIn("[Prior Year Label]", expression)
+            else:
+                self.assertIn(_FALLBACK, expression)
+                _assert_unsupported(self, expression[expression.index("/* TODO:"):])
+
+    def test_generate_tmdl_uses_only_declared_physical_date_types(self):
+        for datatype in ("date", "datetime", "string", None):
+            with self.subTest(datatype=datatype):
+                content = self._generate_tables([
+                    self._datasource("Synthetic", "Records", datatype)])["Records"]
+                self._assert_generated_year_labels(
+                    content, "Records", datatype in ("date", "datetime"))
+
+    def test_generate_tmdl_date_proof_does_not_cross_datasource_identity(self):
+        for date_first in (True, False):
+            with self.subTest(date_first=date_first):
+                sources = [self._datasource("TypedSource", "Records", "date"),
+                           self._datasource("TextSource", "OtherRecords", "string")]
+                for calculation in sources[1]["calculations"]:
+                    calculation["name"] = calculation["name"][:-1] + "Text]"
+                    calculation["caption"] += " Text"
+                    calculation["formula"] = (
+                        calculation["formula"].replace("[YearLabel]", "[YearLabelText]")
+                        .replace("[PriorYearLabel]", "[PriorYearLabelText]"))
+                if not date_first:
+                    sources.reverse()
+                contents = self._generate_tables(sources)
+                self._assert_generated_year_labels(contents["Records"], "Records", True)
+                self._assert_generated_year_labels(
+                    contents["OtherRecords"], "OtherRecords", False, " Text")
+
+    def test_generate_tmdl_calculation_date_type_is_not_physical_proof(self):
+        datasource = self._datasource("Synthetic", "Records", "string")
+        datasource["calculations"].append({
+            "name": "[CalculatedDate]", "caption": "Calculated Date",
+            "formula": "DATE([EventDate])", "datatype": "date",
+            "role": "dimension", "datasource_name": "Synthetic",
+        })
+        for calculation in datasource["calculations"][:2]:
+            calculation["formula"] = calculation["formula"].replace(
+                "[EventDate]", "[CalculatedDate]")
+        content = self._generate_tables([datasource])["Records"]
+        self._assert_generated_year_labels(content, "Records", False)
+
+
+class TestReportedScalarNumericMinMax(unittest.TestCase):
+    """Static AST and real generation checks, not native DAX execution."""
+
+    @staticmethod
+    def _proof():
+        return {
+            "table_name": "Facts", "table_columns": {"Amount"},
+            "numeric_columns": {"Amount"},
+            "column_table_map": {"Amount": "Facts"},
+            "measure_names": set(), "calc_map": {}, "param_map": {},
+        }
+
+    @staticmethod
+    def _datasource(formula):
+        return {
+            "name": "Synthetic",
+            "connection": {"type": "SQL Server", "details": {
+                "server": "synthetic.invalid", "database": "synthetic"}},
+            "tables": [{"name": "Facts", "columns": [
+                {"name": "Amount", "datatype": "real"},
+                {"name": "RowKey", "datatype": "integer"}]}],
+            "calculations": [{
+                "name": "[C]", "caption": "C", "formula": formula,
+                "datatype": "real", "role": "measure",
+                "datasource_name": "Synthetic",
+            }, {
+                "name": "[Total]", "caption": "Total", "formula": "SUM([C])",
+                "datatype": "real", "role": "measure",
+                "datasource_name": "Synthetic",
+            }],
+        }
+
+    def _pipeline(self, datasource, extra=None):
+        extra = extra or {}
+        context = _collect_semantic_context([datasource], extra)
+        model = {"model": {"tables": []}}
+        _create_semantic_tables(model, context, [datasource], extra)
+        tables = [table for table in model["model"]["tables"]
+                  if table["name"] == "Facts"]
+        self.assertEqual(len(tables), 1)
+        with tempfile.TemporaryDirectory() as temporary:
+            generate_tmdl([datasource], "Synthetic", extra, temporary,
+                          parameterize=False)
+            path = Path(temporary) / "definition" / "tables" / "Facts.tmdl"
+            self.assertTrue(path.is_file())
+            content = path.read_text(encoding="utf-8")
+        return context, tables[0], content
+
+    def _declaration(self, content, kind, name):
+        matches = re.findall(
+            rf"(?m)^\t{kind} (?:{re.escape(name)}|'{re.escape(name)}') =([^\n]+)",
+            content)
+        self.assertEqual(len(matches), 1, content)
+        return re.sub(r"^/\* Tableau calculation;[^\n]*?\*/\s*", "",
+                      matches[0].strip(), count=1)
+
+    def _assert_nullable_ast(self, expression, function, literal, reverse):
+        tree = _EmittedDax(expression).tree
+        self.assertEqual(tree[:2], ("call", "IF"))
+        guard, blank, choice = tree[2]
+        self.assertEqual(guard, ("call", "ISBLANK", [("column", "Facts", "Amount")]))
+        self.assertEqual(blank, ("call", "BLANK", []))
+        self.assertEqual(choice[:2], ("call", "IF"))
+        condition, left, right = choice[2]
+        self.assertEqual(right if reverse else left, ("column", "Facts", "Amount"))
+
+        def nodes(value):
+            if isinstance(value, (tuple, list)):
+                yield value
+                for child in value:
+                    yield from nodes(child)
+
+        literal_nodes = list(nodes(left if reverse else right))
+        self.assertIn(("value", abs(float(literal))), literal_nodes)
+        if literal.startswith(("+", "-")):
+            self.assertTrue(any(node[:2] == ("unary", literal[0])
+                                for node in literal_nodes))
+        self.assertTrue(any(node[:2] == ("binary", "<" if function == "MIN" else ">")
+                            for node in nodes(condition)))
+        self.assertNotIn("TODO", expression)
+        self.assertNotRegex(expression, r"\b(?:MIN|MAX|SUMX|SUM)\s*\(")
+
+    def test_binary_numeric_literals_both_orders_are_null_guarded_scalar_ast(self):
+        for function in ("MIN", "MAX"):
+            for literal in ("0", "-2.5", "+2.5", "-1e2", "+.5"):
+                for reverse in (False, True):
+                    args = (literal, "[Amount]") if reverse else ("[Amount]", literal)
+                    formula = f"{function}({', '.join(args)})"
+                    with self.subTest(formula=formula):
+                        self.assertTrue(is_supported_scalar_numeric_minmax(
+                            formula, **self._proof()))
+                        expression = convert_tableau_formula_to_dax(
+                            formula, **self._proof(), is_calc_column=True,
+                            validate_output=True, fallback_on_invalid=True)
+                        self._assert_nullable_ast(expression, function, literal, reverse)
+
+    def test_helper_requires_physical_numeric_nonparameter_noncalculated_proof(self):
+        cases = (
+            {"table_name": ""}, {"table_columns": None},
+            {"table_columns": set()}, {"numeric_columns": None},
+            {"numeric_columns": set()},
+            {"column_table_map": {"Amount": None}},
+            {"column_table_map": {"Amount": "OtherFacts"}},
+            {"measure_names": {"amount"}},
+            {"calc_map": {"Amount": "Calculated Amount"}},
+            {"calc_map": {"RawAmount": "Amount"}},
+            {"param_map": {"Amount": "Threshold"}},
+            {"param_map": {"RawParameter": "Amount"}},
+        )
+        for function in ("MIN", "MAX"):
+            for reverse in (False, True):
+                args = "-2, [Amount]" if reverse else "[Amount], -2"
+                for overrides in cases:
+                    with self.subTest(function=function, reverse=reverse, proof=overrides):
+                        proof = {**self._proof(), **overrides}
+                        self.assertFalse(is_supported_scalar_numeric_minmax(
+                            f"{function}({args})", **proof))
+
+    def test_unsupported_binary_shapes_retain_explicit_diagnostics(self):
+        for function in ("MIN", "MAX"):
+            for operand in ("NULL", "TRUE", '"2"', "[RowKey]", "[Unknown]",
+                            "[OtherFacts].[Amount]", "[Amount] + 1"):
+                for reverse in (False, True):
+                    args = (operand, "[Amount]") if reverse else ("[Amount]", operand)
+                    formula = f"{function}({', '.join(args)})"
+                    with self.subTest(formula=formula):
+                        self.assertFalse(is_supported_scalar_numeric_minmax(
+                            formula, **self._proof()))
+                        _assert_unsupported(self, convert_tableau_formula_to_dax(
+                            formula, **self._proof(), is_calc_column=True,
+                            validate_output=True, fallback_on_invalid=True))
+
+    def test_real_pipeline_emits_calculated_column_and_qualified_sum(self):
+        for function in ("MIN", "MAX"):
+            for literal in ("0", "-2.5", "+2.5"):
+                for reverse in (False, True):
+                    args = (literal, "[Amount]") if reverse else ("[Amount]", literal)
+                    formula = f"{function}({', '.join(args)})"
+                    with self.subTest(formula=formula):
+                        datasource = self._datasource(formula)
+                        context, table, content = self._pipeline(datasource)
+                        calculation = context["all_calculations"][0]
+                        self.assertIn(id(calculation),
+                                      context["dax_context"]["scalar_minmax_contexts"])
+                        self.assertNotIn("C", context["measure_names"])
+                        self.assertIn("Total", context["measure_names"])
+                        self.assertEqual(context["column_table_map"]["C"], "Facts")
+                        columns = [column for column in table["columns"]
+                                   if column["name"] == "C"]
+                        self.assertEqual(len(columns), 1)
+                        if "expression" in columns[0]:
+                            self.assertTrue(columns[0]["isCalculated"])
+                            expression = columns[0]["expression"]
+                            self._assert_nullable_ast(expression, function, literal, reverse)
+                            self.assertEqual(self._declaration(content, "column", "C"), expression)
+                        else:
+                            self.assertEqual(literal, "0")
+                            self.assertEqual(columns[0]["sourceColumn"], "C")
+                            partition = table["partitions"][0]["source"]["expression"]
+                            steps = [line.strip() for line in partition.splitlines()
+                                     if "Table.AddColumn(" in line and '"C"' in line]
+                            self.assertEqual(len(steps), 1, partition)
+                            left, right = ("0", "[Amount]") if reverse else ("[Amount]", "0")
+                            comparison = "<" if function == "MIN" else ">"
+                            self.assertIn(
+                                '"C", each if (([Amount] = null)) = true then null else '
+                                f'if ({left} {comparison} {right}) = true then {left} '
+                                f'else {right}, type number)', steps[0])
+                            self.assertIn(steps[0], content)
+                            self.assertRegex(content, r"(?m)^\tcolumn C\s*$")
+                        measures = {measure["name"]: measure["expression"]
+                                    for measure in table["measures"]}
+                        self.assertNotIn("C", measures)
+                        self.assertEqual(measures["Total"], "SUM('Facts'[C])")
+                        self.assertEqual(self._declaration(content, "measure", "Total"),
+                                         "SUM('Facts'[C])")
+                        self.assertNotRegex(content, r"(?m)^\tmeasure '?C'? =")
+
+    def test_real_pipeline_unary_minmax_remain_aggregate_measures(self):
+        for function in ("MIN", "MAX"):
+            with self.subTest(function=function):
+                datasource = self._datasource(f"{function}([Amount])")
+                context, table, content = self._pipeline(datasource)
+                self.assertEqual(context["dax_context"]["scalar_minmax_contexts"], {})
+                self.assertIn("C", context["measure_names"])
+                self.assertNotIn("C", {column["name"] for column in table["columns"]})
+                measures = {measure["name"]: measure["expression"]
+                            for measure in table["measures"]}
+                self.assertEqual(measures["C"], f"{function}('Facts'[Amount])")
+                self.assertEqual(self._declaration(content, "measure", "C"), measures["C"])
+                _assert_unsupported(self, measures["Total"])
+
+    def test_real_pipeline_does_not_invent_missing_or_ambiguous_evidence(self):
+        cases = ("unknown column", "missing type", "text type", "missing owner",
+                 "unknown owner", "foreign column", "ambiguous column",
+                 "calculated operand", "parameter operand", "physical conflict",
+                 "metadata calculation", "declaration conflict")
+        for function in ("MIN", "MAX"):
+            for case in cases:
+                with self.subTest(function=function, case=case):
+                    datasource = self._datasource(f"{function}([Amount], -2)")
+                    calculation = datasource["calculations"][0]
+                    physical = datasource["tables"][0]["columns"][0]
+                    extra = {}
+                    if case == "unknown column":
+                        calculation["formula"] = f"{function}([Missing], -2)"
+                    elif case == "missing type":
+                        physical.pop("datatype")
+                    elif case == "text type":
+                        physical["datatype"] = "string"
+                    elif case in ("missing owner", "unknown owner"):
+                        calculation["datasource_name"] = "" if case == "missing owner" else "Unknown"
+                        calculation["table"] = "Facts"
+                    elif case in ("foreign column", "ambiguous column"):
+                        datasource["tables"].append({"name": "OtherFacts", "columns": [
+                            {"name": "Amount", "datatype": "real"}]})
+                        if case == "foreign column":
+                            calculation["formula"] = f"{function}([OtherFacts].[Amount], -2)"
+                    elif case == "calculated operand":
+                        physical["calculation"] = "[RowKey] + 1"
+                        datasource["calculations"].append({
+                            "name": "[Amount]", "caption": "Amount", "formula": "[RowKey] + 1",
+                            "role": "dimension", "datatype": "real", "datasource_name": "Synthetic"})
+                    elif case == "parameter operand":
+                        extra = {"parameters": [{
+                            "name": "[Parameters].[Amount]", "caption": "Amount",
+                            "datatype": "real", "domain_type": "any", "value": "2"}]}
+                    elif case == "physical conflict":
+                        physical["_source_declaration_conflicts"] = [{"datatype": "string"}]
+                    elif case == "metadata calculation":
+                        datasource["columns"] = [{
+                            "name": "[Amount]", "datatype": "real", "calculation": "[RowKey] + 1"}]
+                    elif case == "declaration conflict":
+                        calculation["_source_declaration_conflicts"] = [{
+                            **calculation, "formula": f"{function}([Amount], -3)"}]
+                    context, table, content = self._pipeline(datasource, extra)
+                    self.assertEqual(context["dax_context"]["scalar_minmax_contexts"], {})
+                    self.assertIn("C", context["measure_names"])
+                    self.assertNotIn("C", {column["name"] for column in table["columns"]})
+                    measures = {measure["name"]: measure["expression"]
+                                for measure in table["measures"]}
+                    _assert_unsupported(self, measures["C"])
+                    _assert_unsupported(self, measures["Total"])
+                    for name in ("C", "Total"):
+                        self.assertEqual(self._declaration(content, "measure", name), measures[name])
+
+
+class TestReportedNumericConstantHomonyms(unittest.TestCase):
+    @staticmethod
+    def _datasources(values=("1", "1")):
+        datasources = []
+        for owner, table, column, value in (
+                ("SourceA", "FactsA", "Other", values[0]),
+                ("SourceB", "FactsB", "Kind", values[1])):
+            calculations = []
+            if owner == "SourceB":
+                calculations.append({
+                    "name": "[Chosen]", "caption": "Chosen",
+                    "formula": 'IF [Kind] = "X" THEN [Unit] END',
+                    "role": "measure", "datatype": "real", "datasource_name": owner,
+                })
+            calculations.append({
+                "name": "[Unit]", "caption": "Unit", "formula": value,
+                "role": "measure", "datatype": "real", "datasource_name": owner,
+            })
+            datasources.append({
+                "name": owner,
+                "connection": {"type": "SQL Server", "details": {
+                    "server": "synthetic.invalid", "database": "synthetic"}},
+                "tables": [{"name": table, "columns": [
+                    {"name": column, "datatype": "string"}]}],
+                "calculations": calculations,
+            })
+        return datasources
+
+    def _pipeline(self, datasources, extra=None):
+        extra = extra or {}
+        context = _collect_semantic_context(datasources, extra)
+        model = {"model": {"tables": []}}
+        _create_semantic_tables(model, context, datasources, extra)
+        tables = {table["name"]: table for table in model["model"]["tables"]}
+        with tempfile.TemporaryDirectory() as temporary:
+            generate_tmdl(datasources, "Synthetic", extra, temporary,
+                          parameterize=False)
+            contents = {path.stem: path.read_text(encoding="utf-8")
+                        for path in (Path(temporary) / "definition" / "tables").glob("*.tmdl")}
+        self.assertEqual(set(contents), set(tables))
+        return context, tables, contents
+
+    def _assert_materialized(self, table, content, name, body):
+        columns = [column for column in table["columns"] if column["name"] == name]
+        self.assertEqual(len(columns), 1)
+        self.assertEqual(columns[0]["sourceColumn"], name)
+        partition = table["partitions"][0]["source"]["expression"]
+        steps = [line.strip() for line in partition.splitlines()
+                 if "Table.AddColumn(" in line and f'"{name}", each ' in line]
+        self.assertEqual(len(steps), 1, partition)
+        self.assertIn(f'"{name}", each {body}, type number)', steps[0])
+        self.assertIn(steps[0], content)
+        self.assertRegex(content, rf"(?m)^\tcolumn (?:{name}|'{name}')\s*$")
+        self.assertNotIn(name, {measure["name"] for measure in table["measures"]})
+        self.assertNotRegex(content, rf"(?m)^\tmeasure (?:{name}|'{name}') =")
+        self.assertNotIn("TODO", partition)
+        self.assertNotIn("BLANK()", partition)
+
+    def _assert_local_constants(self, tables, contents, values):
+        for table_name, value in zip(("FactsA", "FactsB"), values):
+            self._assert_materialized(tables[table_name], contents[table_name], "Unit", value)
+
+    def test_source_b_alone_materializes_measure_role_row_consumer(self):
+        _, tables, contents = self._pipeline(self._datasources()[1:])
+        self._assert_materialized(tables["FactsB"], contents["FactsB"], "Unit", "1")
+        self._assert_materialized(
+            tables["FactsB"], contents["FactsB"], "Chosen",
+            'if ([Kind] = "X") = true then 1 else null')
+
+    def test_homonymous_numeric_constants_bind_local_targets_in_both_source_orders(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources()
+                if reverse:
+                    datasources.reverse()
+                context, tables, contents = self._pipeline(datasources)
+                self.assertEqual({(calc["datasource_name"], calc["name"], calc["caption"])
+                                  for calc in context["all_calculations"]}, {
+                    ("SourceA", "[Unit]", "Unit"), ("SourceB", "[Unit]", "Unit"),
+                    ("SourceB", "[Chosen]", "Chosen")})
+                bindings = {name: owner for name, owner in context["column_table_map"].items()
+                            if name.startswith("Unit")}
+                self.assertEqual(len(bindings), 2)
+                self.assertNotIn("Unit", bindings)
+                self.assertEqual(set(bindings.values()), {"FactsA", "FactsB"})
+                self.assertEqual(context["column_table_map"]["Chosen"], "FactsB")
+                self._assert_local_constants(tables, contents, ("1", "1"))
+                self._assert_materialized(
+                    tables["FactsB"], contents["FactsB"], "Chosen",
+                    'if ([Kind] = "X") = true then 1 else null')
+                self.assertEqual({column["name"] for column in tables["FactsA"]["columns"]},
+                                 {"Other", "Unit"})
+                self.assertEqual({column["name"] for column in tables["FactsB"]["columns"]},
+                                 {"Kind", "Chosen", "Unit"})
+                for content in contents.values():
+                    self.assertNotIn("TODO", content)
+                    self.assertNotIn("BLANK()", content)
+
+    def test_distinct_homonymous_constants_do_not_inline_foreign_value(self):
+        """Same-caption literals retain their datasource-local values."""
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources(("2", "7"))
+                if reverse:
+                    datasources.reverse()
+                _, tables, contents = self._pipeline(datasources)
+                self._assert_local_constants(tables, contents, ("2", "7"))
+                self._assert_materialized(
+                    tables["FactsB"], contents["FactsB"], "Chosen",
+                    'if ([Kind] = "X") = true then 7 else null')
+
+    def test_literal_alias_chain_is_resolved_within_its_datasource(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources(("2", "7"))
+                for datasource in datasources:
+                    owner = datasource["name"]
+                    datasource["calculations"].extend(({
+                        "name": "[LocalUnit]", "caption": "LocalUnit",
+                        "formula": "[Unit]", "role": "measure", "datatype": "real",
+                        "datasource_name": owner,
+                    }, {
+                        "name": "[LocalUnit2]", "caption": "LocalUnit2",
+                        "formula": "[LocalUnit]", "role": "measure", "datatype": "real",
+                        "datasource_name": owner,
+                    }))
+                source_b = next(ds for ds in datasources if ds["name"] == "SourceB")
+                source_b["calculations"][0]["formula"] = (
+                    'IF [Kind] = "X" THEN [LocalUnit2] END')
+                if reverse:
+                    datasources.reverse()
+                _, tables, contents = self._pipeline(datasources)
+                self._assert_local_constants(tables, contents, ("2", "7"))
+                self._assert_materialized(
+                    tables["FactsB"], contents["FactsB"], "Chosen",
+                    'if ([Kind] = "X") = true then 7 else null')
+
+    def test_parameter_value_wins_over_homonymous_calculation_literal(self):
+        datasources = self._datasources(("2", "7"))
+        source_b = next(ds for ds in datasources if ds["name"] == "SourceB")
+        source_b["tables"][0]["columns"].append(
+            {"name": "Unit", "datatype": "real"})
+        source_b["calculations"][0]["formula"] = (
+            'IF [Kind] = "X" THEN [Parameters].[UnitParam] END')
+        extra = {"parameters": [{
+            "name": "[Parameters].[UnitParam]", "caption": "Unit",
+            "datatype": "real", "domain_type": "any", "value": "9",
+        }]}
+        context, tables, contents = self._pipeline(datasources, extra)
+        self.assertEqual(context["dax_context"]["param_values"]["Unit"], "9")
+        self.assertEqual(context["dax_context"]["parameter_values"]["Unit"], "9")
+        self._assert_materialized(
+            tables["FactsB"], contents["FactsB"], "Chosen",
+            'if ([Kind] = "X") = true then 9 else null')
+
+    def test_conflicting_local_literal_aliases_remain_diagnostic(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources(("2", "7"))
+                source_b = next(ds for ds in datasources if ds["name"] == "SourceB")
+                original = next(calc for calc in source_b["calculations"]
+                                if calc["caption"] == "Unit")
+                alternative = {**original, "formula": "9"}
+                conflict = [dict(original), alternative]
+                original["_source_declaration_conflicts"] = conflict
+                alternative["_source_declaration_conflicts"] = conflict
+                source_b["calculations"].append(alternative)
+                if reverse:
+                    datasources.reverse()
+                _, tables, contents = self._pipeline(datasources)
+                for name in ("Unit", "Chosen"):
+                    column = next(column for column in tables["FactsB"]["columns"]
+                                  if column["name"] == name)
+                    _assert_unsupported(
+                        self, column["expression"],
+                        "conflicting source calculation declarations")
+                    self.assertNotRegex(
+                        contents["FactsB"],
+                        rf'Table\.AddColumn\([^\n]*"{name}"')
+                self._assert_materialized(
+                    tables["FactsA"], contents["FactsA"], "Unit", "2")
+
+    def test_foreign_constant_does_not_shadow_local_physical_column(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources(("2", "7"))
+                source_b = next(ds for ds in datasources if ds["name"] == "SourceB")
+                source_b["tables"][0]["columns"].append(
+                    {"name": "Unit", "datatype": "real"})
+                source_b["calculations"] = [
+                    calc for calc in source_b["calculations"]
+                    if calc["caption"] != "Unit"
+                ]
+                if reverse:
+                    datasources.reverse()
+                _, tables, contents = self._pipeline(datasources)
+                self._assert_materialized(
+                    tables["FactsB"], contents["FactsB"], "Chosen",
+                    'if ([Kind] = "X") = true then [Unit] else null')
+                self.assertEqual(
+                    tables["FactsB"]["columns"][0]["name"], "Kind")
+                self.assertIn("Unit", {column["name"]
+                                        for column in tables["FactsB"]["columns"]})
+
+    def test_transitive_homonymous_constants_keep_local_value(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources(("2", "7"))
+                for datasource in datasources:
+                    datasource["calculations"].append({
+                        "name": "[LocalUnit]", "caption": "LocalUnit",
+                        "formula": "[Unit]", "role": "measure", "datatype": "real",
+                        "datasource_name": datasource["name"],
+                    })
+                datasources[1]["calculations"][0]["formula"] = (
+                    'IF [Kind] = "X" THEN [LocalUnit] END')
+                if reverse:
+                    datasources.reverse()
+                _, tables, contents = self._pipeline(datasources)
+                self._assert_local_constants(tables, contents, ("2", "7"))
+                self._assert_materialized(
+                    tables["FactsB"], contents["FactsB"], "Chosen",
+                    'if ([Kind] = "X") = true then 7 else null')
+
+    def test_missing_consumer_owner_remains_diagnostic(self):
+        """Missing ownership never borrows a literal from another datasource."""
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources()
+                datasources[1]["calculations"][0].pop("datasource_name")
+                if reverse:
+                    datasources.reverse()
+                _, tables, contents = self._pipeline(datasources)
+                declarations = [item for table in tables.values()
+                                for kind in ("columns", "measures")
+                                for item in table[kind] if item["name"] == "Chosen"]
+                self.assertEqual(len(declarations), 1)
+                _assert_unsupported(self, declarations[0].get("expression", ""))
+                self.assertTrue(any(_FALLBACK in content for content in contents.values()))
+                for content in contents.values():
+                    self.assertNotRegex(content, r'Table\.AddColumn\([^\n]*"Chosen"')
+
+    def test_conflicting_local_constant_and_consumer_remain_diagnostic(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources()
+                constant = datasources[1]["calculations"][1]
+                constant["_source_declaration_conflicts"] = [dict(constant, formula="2")]
+                if reverse:
+                    datasources.reverse()
+                _, tables, contents = self._pipeline(datasources)
+                columns = {column["name"]: column for column in tables["FactsB"]["columns"]}
+                for name in ("Unit", "Chosen"):
+                    _assert_unsupported(self, columns[name]["expression"],
+                                        "conflicting source calculation declarations")
+                    self.assertIn(columns[name]["expression"], contents["FactsB"])
+                    self.assertNotRegex(contents["FactsB"],
+                                        rf'Table\.AddColumn\([^\n]*"{name}"')
+                self._assert_materialized(tables["FactsA"], contents["FactsA"], "Unit", "1")
+
+    def test_true_cross_table_row_measure_remains_diagnostic(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                datasources = self._datasources()
+                datasources[1]["tables"].append({"name": "LookupB", "columns": [
+                    {"name": "Weight", "datatype": "real"}]})
+                datasources[1]["calculations"][0]["formula"] = (
+                    'IF [Kind] = "X" THEN [Weight] END')
+                if reverse:
+                    datasources.reverse()
+                _, tables, contents = self._pipeline(datasources)
+                measures = {measure["name"]: measure["expression"]
+                            for measure in tables["FactsB"]["measures"]}
+                _assert_unsupported(self, measures["Chosen"], "row", "scope", "grain")
+                self.assertIn(measures["Chosen"], contents["FactsB"])
+                self.assertNotIn("Chosen", {column["name"]
+                                            for column in tables["FactsB"]["columns"]})
+                self.assertNotRegex(contents["FactsB"], r'Table\.AddColumn\([^\n]*"Chosen"')
+                self._assert_local_constants(tables, contents, ("1", "1"))
 
 
 class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
@@ -1982,6 +2902,61 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
         self.assertIsNotNone(declaration, content)
         return re.sub(r"^/\* Tableau calculation;[^\n]*?\*/\s*", "",
                       declaration.group(1).strip(), count=1)
+
+    def test_tmdl_generation_wires_include_shelf_and_keeps_unproven_diagnostic(self):
+        datasource = self._fixed_datasource()
+        datasource["tables"][0]["columns"] = [
+            {"name": "Sector", "datatype": "string"},
+            {"name": "Homes", "datatype": "real"},
+            {"name": "Price", "datatype": "real"},
+        ]
+        datasource["calculations"] = [
+            {"name": "[IncludedHomes]", "caption": "Homes by Sector",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real",
+             "formula": "{INCLUDE [Sector] : SUM([Homes])}"},
+            {"name": "[IncludedRevenue]", "caption": "Revenue by Sector",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real",
+             "formula": "{INCLUDE [Sector] : SUM([Homes] * [Price])}"},
+            {"name": "[ExcludedHomes]", "caption": "Homes excl Sector",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real",
+             "formula": "{EXCLUDE [Sector] : SUM([Homes])}"},
+            {"name": "[UnprovenInclude]", "caption": "Unproven include",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real",
+             "formula": "{INCLUDE [Sector] : SUM([Homes])}"},
+        ]
+        shelf_field = lambda name: {
+            "name": name, "datasource": "Synthetic", "aggregation": "SUM",
+            "aggregation_evidence": "explicit",
+            "aggregation_candidates": ["sum"],
+        }
+        worksheets = [{
+            "name": "LOD shelf evidence",
+            "fields": [shelf_field("[IncludedHomes]"),
+                       shelf_field("[IncludedRevenue]"),
+                       shelf_field("[ExcludedHomes]")],
+        }]
+
+        content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
+        self.assertEqual(self._fixed_declaration(
+            content, "IncludedHomes", "Homes by Sector"),
+            "/* shelf (sum:) INCLUDE approximation; source filters and totals "
+            "unverified */ SUMX(VALUES('Housing'[Sector]), "
+            "CALCULATE(SUM('Housing'[Homes])))")
+        revenue = self._fixed_declaration(
+            content, "IncludedRevenue", "Revenue by Sector")
+        self.assertIn("shelf (sum:) INCLUDE approximation", revenue)
+        self.assertIn("SUMX(VALUES('Housing'[Sector])", revenue)
+        self.assertIn("CALCULATE(SUMX('Housing',", revenue)
+        self.assertIn(
+            "CALCULATE(SUM('Housing'[Homes]), REMOVEFILTERS('Housing'[Sector]))",
+            self._fixed_declaration(content, "ExcludedHomes", "Homes excl Sector"))
+        _assert_unsupported(
+            self, self._fixed_declaration(content, "UnprovenInclude", "Unproven include"),
+            "INCLUDE", "explicit", "shelf")
 
     def test_r4_fixed_sum_shelf_without_view_dimensions_survives_tmdl_postprocess(self):
         from powerbi_import.dax_validator import validate_dax_expression

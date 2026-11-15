@@ -139,7 +139,7 @@ nested LOD are outside that fallback. See the
   - Type conversions: `INT`, `FLOAT` → `CONVERT`, `STR` → `FORMAT`
   - Statistics: `MEDIAN`, `PERCENTILE` → `PERCENTILE.INC`, `VAR` → `VAR.S`, `VARP` → `VAR.P`
   - LOD INCLUDE: `{INCLUDE [sensor_type],[machine_id] : AVG([value])}` → `CALCULATE(AVERAGE)`
-  - Date: `DATETRUNC(month/quarter)` → `STARTOFMONTH/STARTOFQUARTER`, `DATEPART(hour/weekday)` → `HOUR/WEEKDAY`
+  - Date: `DATETRUNC(month/quarter)` → `STARTOFMONTH/STARTOFQUARTER`, `DATEPART(hour)` → `HOUR`; `DATEPART(weekday)` remains diagnostic because week-start numbering is unverified
   - Table calcs: `RUNNING_AVG`, `RUNNING_COUNT`, `RUNNING_MAX`, `RUNNING_MIN`
   - Ranking: `RANK_DENSE` → `RANKX(ALL(), ..., DENSE)`, `RANK_UNIQUE` → `RANKX(ALL())`
   - Window: `WINDOW_SUM` → `CALCULATE(SUM, ALL)`

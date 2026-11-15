@@ -543,7 +543,7 @@ def _pbi_literal(v, column_type=None):
     return f"'{v_str.replace(chr(39), chr(39) * 2)}'"
 
 
-def _filter_literal(v, date_part_prefix='', boundary='min'):
+def _filter_literal(v, date_part_prefix='', boundary='min', column_type=None):
     """Convert a filter min/max value to a PBI literal.
 
     Handles three cases:
@@ -552,6 +552,9 @@ def _filter_literal(v, date_part_prefix='', boundary='min'):
     - **Tableau date hash** (``#2001-12-07#``): → PBI datetime literal.
     - **Other**: fall through to ``_pbi_literal()``.
     """
+    if str(column_type or '').lower() == 'string':
+        return _pbi_literal(v, column_type)
+
     v_str = str(v).strip()
 
     # Tableau date literal: #YYYY-MM-DD# → datetime'...'
@@ -7383,7 +7386,7 @@ class PowerBIProjectGenerator:
                         "Comparison": {
                             "ComparisonKind": 2,  # >=
                             "Left": {_field_kind: {"Expression": {"SourceRef": {"Source": "t"}}, "Property": prop}},
-                            "Right": {"Literal": {"Value": _filter_literal(f['min'], _date_part_prefix, 'min')}}
+                            "Right": {"Literal": {"Value": _filter_literal(f['min'], _date_part_prefix, 'min', _col_type)}}
                         }
                     })
                 if f.get('max') is not None and str(f['max']).strip():
@@ -7391,7 +7394,7 @@ class PowerBIProjectGenerator:
                         "Comparison": {
                             "ComparisonKind": 3,  # <=
                             "Left": {_field_kind: {"Expression": {"SourceRef": {"Source": "t"}}, "Property": prop}},
-                            "Right": {"Literal": {"Value": _filter_literal(f['max'], _date_part_prefix, 'max')}}
+                            "Right": {"Literal": {"Value": _filter_literal(f['max'], _date_part_prefix, 'max', _col_type)}}
                         }
                     })
                 if conditions:
@@ -7575,6 +7578,10 @@ class PowerBIProjectGenerator:
         visual = visual_json['visual']
         visual_type = visual['visualType']
         state = visual.get('query', {}).get('queryState', {})
+        _disambiguate_aggregation_query_refs([
+            projection for role in state.values()
+            for projection in role.get('projections', [])
+        ])
         objects = self._build_visual_objects(
             ws_name, ws_data, visual_type, query_state=state)
         formatting = ws_data.get('formatting', {}) if isinstance(ws_data, dict) else {}

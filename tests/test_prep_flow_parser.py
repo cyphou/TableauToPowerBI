@@ -288,6 +288,22 @@ class TestConvertPrepExpression(unittest.TestCase):
             ):
                 _convert_prep_expression_to_m(expression)
 
+    def test_datepart_rejects_unsupported_semantics(self):
+        for part in ('quarter', 'week', 'dayofweek'):
+            expression = f'DATEPART("{part}", [Date])'
+            with self.subTest(part=part), self.assertRaisesRegex(
+                ValueError,
+                r'(?i)(DATEPART.*(unsupported|semantics)|(unsupported|semantics).*DATEPART)',
+            ):
+                _convert_prep_expression_to_m(expression)
+
+    def test_datepart_text_inside_string_literal_is_preserved(self):
+        expression = "'DATEPART(\"dayofweek\", [Date])'"
+        self.assertEqual(
+            _convert_prep_expression_to_m(expression),
+            '"DATEPART(""dayofweek"", [Date])"',
+        )
+
     def test_ifnull_field_and_text_fallbacks_preserve_literal_contents(self):
         self.assertEqual(
             _convert_prep_expression_to_m('IFNULL([Amount], [Fallback])'),

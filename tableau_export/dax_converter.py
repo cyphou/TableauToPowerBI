@@ -71,22 +71,6 @@ _SIMPLE_FUNCTION_MAP = [
     (r'\bCHAR\s*\(', 'UNICHAR('),
     # ATTR is handled separately in _convert_attr() — context-aware (measure vs column)
 
-    # Date functions — DATETRUNC
-    (r'\bDATETRUNC\s*\(\s*[\'"]?year[\'"]?\s*,', 'STARTOFYEAR('),
-    (r'\bDATETRUNC\s*\(\s*[\'"]?quarter[\'"]?\s*,', 'STARTOFQUARTER('),
-    (r'\bDATETRUNC\s*\(\s*[\'"]?month[\'"]?\s*,', 'STARTOFMONTH('),
-
-    # Date functions — DATEPART
-    (r'\bDATEPART\s*\(\s*[\'"]?year[\'"]?\s*,\s*', 'YEAR('),
-    (r'\bDATEPART\s*\(\s*[\'"]?quarter[\'"]?\s*,\s*', 'QUARTER('),
-    (r'\bDATEPART\s*\(\s*[\'"]?month[\'"]?\s*,\s*', 'MONTH('),
-    (r'\bDATEPART\s*\(\s*[\'"]?day[\'"]?\s*,\s*', 'DAY('),
-    (r'\bDATEPART\s*\(\s*[\'"]?hour[\'"]?\s*,\s*', 'HOUR('),
-    (r'\bDATEPART\s*\(\s*[\'"]?minute[\'"]?\s*,\s*', 'MINUTE('),
-    (r'\bDATEPART\s*\(\s*[\'"]?second[\'"]?\s*,\s*', 'SECOND('),
-    (r'\bDATEPART\s*\(\s*[\'"]?week[\'"]?\s*,\s*', 'WEEKNUM('),
-    (r'\bDATEPART\s*\(\s*[\'"]?weekday[\'"]?\s*,\s*', 'WEEKDAY('),
-
     # Date functions — misc
     # DATEADD handled by _convert_dateadd (scalar: EDATE/arithmetic)
     (r'\bTODAY\s*\(\s*\)', 'TODAY()'),
@@ -94,7 +78,6 @@ _SIMPLE_FUNCTION_MAP = [
     # DATENAME handled by _convert_datename (needs format string arg)
     # DATEPARSE handled by _convert_dateparse (needs value extraction)
     (r'\bMAKEDATE\s*\(', 'DATE('),
-    (r'\bMAKEDATETIME\s*\(', 'DATE('),
     (r'\bMAKETIME\s*\(', 'TIME('),
 
     # Text functions
@@ -144,7 +127,6 @@ _SIMPLE_FUNCTION_MAP = [
     (r'\bSTDEV\s*\(', 'STDEV.S('),
     (r'\bVARP\s*\(', 'VAR.P('),      # VARP before VAR
     (r'\bVAR\s*\(', 'VAR.S('),
-    (r'\bPERCENTILE\s*\(', 'PERCENTILE.INC('),
     # CORR/COVAR/COVARP handled by _convert_corr_covar (no direct DAX equivalent)
 
     # Type conversions
@@ -294,7 +276,10 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                                     fallback_on_invalid=False,
                                     verified_row_scope=None,
                                     verified_fixed_scope=None,
-                                    fixed_shelf_aggregation=None):
+                                    fixed_shelf_aggregation=None,
+                                    date_columns=None,
+                                    lod_shelf_aggregation=None,
+                                    numeric_columns=None):
     """
     Converts a Tableau formula to DAX with context resolution.
 
@@ -324,6 +309,14 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         fixed_shelf_aggregation: Independently resolved SUM/AVG/MIN/MAX shelf
             enabling a bounded physical-column FIXED approximation when exact
             proof is unavailable. Source filter scope and totals stay unverified.
+        lod_shelf_aggregation: Explicit SUM/AVG/MIN/MAX shelf evidence for a
+            bounded INCLUDE approximation. It never authorizes an inferred shelf.
+        date_columns: Optional collection of local physical column names proven
+            date/datetime by the semantic owner, permitting YEAR extrema lowering.
+            Missing proof never implies a date type from syntax or output type.
+        numeric_columns: Optional collection of local physical numeric columns
+            proven by the semantic owner for bounded INCLUDE/EXCLUDE lowering
+            and scalar MIN/MAX with a non-null numeric literal.
 
     Returns:
         str: Valid DAX formula
@@ -388,6 +381,29 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # shelf aggregation, or the subtotal/grand-total grain. In particular,
     # removing the FIXED dimensions in a multi-table expression is wrong.
     masked, restore = _protect_source_tokens(dax)
+    has_source_lod = bool(re.search(
+        r'\{\s*(?:FIXED|INCLUDE|EXCLUDE)\b', masked, re.IGNORECASE))
+    if (table_columns is not None and re.search(
+            r'\{\s*(?:INCLUDE|EXCLUDE)\b', masked, re.IGNORECASE)):
+        lod_expression, lod_reason = _compile_context_lod(
+            masked, restore, table_name=table_name,
+            column_table_map=column_table_map, measure_names=measure_names,
+            table_columns=table_columns, numeric_columns=numeric_columns,
+            is_calc_column=is_calc_column,
+            shelf=(lod_shelf_aggregation if lod_shelf_aggregation is not None
+                   else fixed_shelf_aggregation))
+        if lod_expression is None:
+            return _unsupported_conversion(lod_reason)
+        if validate_output:
+            try:
+                from powerbi_import.dax_validator import validate_dax_expression
+                lod_issues = validate_dax_expression(lod_expression)
+            except (ImportError, OSError, ValueError):
+                lod_issues = []
+            if lod_issues and fallback_on_invalid:
+                return _unsupported_conversion(
+                    'bounded INCLUDE/EXCLUDE expression failed DAX validation')
+        return lod_expression
     if verified_fixed_scope is not None and re.search(
             r'\{\s*FIXED\b', masked, re.IGNORECASE):
         fixed_sum = _compile_verified_fixed_sum(
@@ -440,7 +456,11 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         dax, table_name=table_name, column_table_map=column_table_map,
         measure_names=measure_names, is_calc_column=is_calc_column,
         table_columns=table_columns, calc_datatype=calc_datatype,
-        verified_row_scope=verified_row_scope,
+        verified_row_scope=verified_row_scope, date_columns=date_columns,
+        numeric_columns=numeric_columns,
+        nonphysical_names={name for mapping in (calc_map, param_map)
+                           for name in (*mapping.keys(), *mapping.values())
+                           if isinstance(name, str)},
     )
     if grain_issue:
         return _unsupported_conversion(grain_issue)
@@ -509,6 +529,16 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     )
 
     # 3b. Apply all simple function mappings (table-driven)
+    dax = _convert_datetrunc(
+        dax, table_name=table_name, table_columns=table_columns,
+        date_columns=date_columns, column_table_map=column_table_map,
+        measure_names=measure_names,
+        nonphysical_names={name for mapping in (calc_map, param_map)
+                           for name in (*mapping.keys(), *mapping.values())
+                           if isinstance(name, str)},
+        is_calc_column=is_calc_column,
+    )
+    dax = _convert_datepart_direct_units(dax)
     for compiled_pattern, replacement in _COMPILED_FUNCTION_MAP:
         dax = compiled_pattern.sub(replacement, dax)
 
@@ -522,14 +552,13 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_ifnull(dax)
 
     # 3d. LOD Expressions → CALCULATE
-    dax = _convert_lod_expressions(
-        dax, table_name, column_table_map,
-        allow_unverified_fixed=table_columns is None,
-    )
+    dax = _convert_lod_expressions(dax, table_name, column_table_map)
     masked_lod, _ = _protect_source_tokens(dax)
     if '/* TODO: DAX conversion validation failed for ' in masked_lod:
-        return _unsupported_conversion(
-            'level-of-detail expression requires verified source and target grain')
+        if has_source_lod:
+            return _unsupported_conversion(
+                'level-of-detail expression requires verified source and target grain')
+        return dax
 
     # 3e. WINDOW_xxx table calculations
     dax = _convert_window_functions(dax, table_name, compute_using=compute_using,
@@ -553,10 +582,29 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         if match.group('operator') else match.group(0),
         dax,
     )
+    dax = _convert_makedatetime(
+        dax, table_name=table_name, table_columns=table_columns,
+        column_table_map=column_table_map, measure_names=measure_names,
+        nonphysical_names={name for mapping in (calc_map, param_map)
+                           for name in (*mapping.keys(), *mapping.values())
+                           if isinstance(name, str)},
+        is_calc_column=is_calc_column)
 
     # === Phase 5: Resolve remaining columns [col] → 'Table'[col] ===
     dax = _resolve_columns(dax, table_name, column_table_map, measure_names,
                            is_calc_column, param_values, table_columns=table_columns)
+    dax = _convert_percentile(dax)
+
+    dax, startof_issue = _convert_startof_scalar_extrema(
+        dax, table_name=table_name, table_columns=table_columns,
+        date_columns=date_columns, column_table_map=column_table_map,
+        measure_names=measure_names,
+        nonphysical_names={name for mapping in (calc_map, param_map)
+                           for name in (*mapping.keys(), *mapping.values())
+                           if isinstance(name, str)},
+    )
+    if startof_issue:
+        return _unsupported_conversion(startof_issue)
 
     # === Phase 5a: Fix STARTOF* for calculated columns ===
     if is_calc_column:
@@ -618,6 +666,8 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # Parse operators rather than matching slashes in strings/identifiers.
     dax = _convert_measure_ref_ratio(dax, measure_names)
     dax = _convert_safe_division(dax)
+    dax = _convert_datepart_quarter(dax)
+    dax = _convert_datepart_week(dax)
     dax = dax.replace(regex_series_value_token, '[Value]')
 
     # === Phase 7: Optional conversion guard validation (Phase 3 foundation) ===
@@ -834,6 +884,68 @@ def _ungroup_source(node):
     return node
 
 
+def _scalar_numeric_minmax_reference(node, *, table_name, table_columns,
+                                     numeric_columns, column_table_map,
+                                     measure_names, nonphysical_names):
+    """Return the physical operand only for the bounded binary numeric case."""
+    node = _ungroup_source(node)
+    collections = (list, tuple, set, frozenset)
+    if (node[0] != 'call' or node[1].upper() not in ('MIN', 'MAX')
+            or len(node[2]) != 2 or not isinstance(table_name, str)
+            or not table_name or not isinstance(table_columns, collections)
+            or not isinstance(numeric_columns, collections)):
+        return None
+    operands = [_ungroup_source(arg) for arg in node[2]]
+    for reference, literal in (operands, operands[::-1]):
+        if reference[0] != 'ref':
+            continue
+        if literal[0] == 'unary' and literal[1] in ('+', '-'):
+            literal = _ungroup_source(literal[2])
+        if (literal[0] != 'atom' or re.fullmatch(
+                r'(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', literal[1]) is None):
+            continue
+        owner, name = reference[2:]
+        excluded = {item.casefold() for item in (*measure_names, *nonphysical_names)
+                    if isinstance(item, str)}
+        if (name in table_columns and name in numeric_columns
+                and name.casefold() not in excluded
+                and (owner is None or owner == table_name)
+                and column_table_map.get(name, table_name) == table_name):
+            return reference
+    return None
+
+
+def is_supported_scalar_numeric_minmax(formula, *, table_name, table_columns,
+                                        numeric_columns, column_table_map=None,
+                                        measure_names=None, calc_map=None,
+                                        param_map=None):
+    """Recognize a whole scalar MIN/MAX formula for pre-conversion classification.
+
+    Physical and numeric inventories must exclude calculations, parameters,
+    ambiguous bindings and declaration conflicts. Maps additionally veto raw
+    calculation/parameter identifiers and captions. True permits row-column
+    classification only; it proves neither measure scope nor aggregate totals.
+    Pass the same inventories/maps to convert_tableau_formula_to_dax with
+    is_calc_column=True after independently establishing local row context.
+    """
+    if not isinstance(formula, str):
+        return False
+    try:
+        root = _SourceExpressionParser(_normalize_tableau_quote_escapes(
+            _strip_tableau_comments(formula)).strip()).parse()
+        return _scalar_numeric_minmax_reference(
+            root, table_name=table_name, table_columns=table_columns,
+            numeric_columns=numeric_columns,
+            column_table_map=column_table_map or {},
+            measure_names=measure_names or (),
+            nonphysical_names={name for mapping in (calc_map or {}, param_map or {})
+                               for name in (*mapping.keys(), *mapping.values())
+                               if isinstance(name, str)},
+        ) is not None
+    except (_SourceExpressionError, RecursionError):
+        return False
+
+
 def _compile_verified_fixed_sum(masked, restore, *, table_name, column_table_map,
                                 measure_names, table_columns, is_calc_column,
                                 scope):
@@ -1046,6 +1158,164 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
     except (ImportError, OSError, ValueError):
         return None
     return expression
+
+
+def _compile_context_lod(masked, restore, *, table_name, column_table_map,
+                         measure_names, table_columns, numeric_columns,
+                         is_calc_column, shelf):
+    """Compile a narrow same-table INCLUDE/EXCLUDE subset for model generation."""
+    if (is_calc_column or not isinstance(table_name, str) or not table_name
+            or not isinstance(table_columns, (list, tuple, set, frozenset))
+            or not isinstance(numeric_columns, (list, tuple, set, frozenset))):
+        return None, 'INCLUDE/EXCLUDE requires physical table and numeric-column evidence'
+
+    match = re.fullmatch(
+        r'\s*(?:(?P<outer>SUM|AVG|AVERAGE|MIN|MAX)\s*\(\s*)?'
+        r'\{\s*(?P<kind>INCLUDE|EXCLUDE)\b'
+        r'(?P<dims>[^:{}()]*?)\s*:\s*(?P<body>[^{}]+)\}'
+        r'\s*(?(outer)\))\s*',
+        masked, re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None, 'nested or composed INCLUDE/EXCLUDE requires verified target grain'
+
+    kind = match.group('kind').upper()
+    outer = match.group('outer')
+    dims_text = match.group('dims').strip()
+    if kind == 'INCLUDE' and not dims_text:
+        return None, 'INCLUDE requires one or more physical dimension keys'
+    if kind == 'EXCLUDE' and outer:
+        return None, 'aggregating an EXCLUDE result requires verified visual and total grain'
+
+    try:
+        dimensions = [
+            _ungroup_source(_SourceExpressionParser(restore(part)).parse())
+            for part in dims_text.split(',') if part.strip()
+        ]
+        body_text = restore(match.group('body')).strip()
+        body = _ungroup_source(_SourceExpressionParser(body_text).parse())
+    except (_SourceExpressionError, RecursionError):
+        return None, f'{kind} requires a supported aggregate and physical dimension keys'
+
+    if (len(dimensions) > 32 or any(node[0] != 'ref' for node in dimensions)
+            or body[0] != 'call' or len(body[2]) != 1):
+        return None, f'{kind} requires a supported single-column or row-expression aggregate'
+
+    aggregate_names = {
+        'SUM': 'SUM', 'AVG': 'AVERAGE', 'AVERAGE': 'AVERAGE',
+        'MIN': 'MIN', 'MAX': 'MAX',
+    }
+    inner_name = aggregate_names.get(body[1].upper())
+    if inner_name is None:
+        return None, f'{kind} inner aggregate is unsupported'
+
+    available = set(table_columns)
+    numeric = set(numeric_columns)
+    measures = {name.casefold() for name in measure_names if isinstance(name, str)}
+
+    def local_physical_column(node, *, require_numeric=False):
+        node = _ungroup_source(node)
+        if node[0] != 'ref':
+            return None
+        _, _, owner, name = node
+        if (name not in available or name.casefold() in measures
+                or (owner is not None and owner != table_name)
+                or column_table_map.get(name, table_name) != table_name
+                or (require_numeric and name not in numeric)):
+            return None
+        return name
+
+    dimension_names = [local_physical_column(node) for node in dimensions]
+    if (any(name is None for name in dimension_names)
+            or len({name.casefold() for name in dimension_names}) != len(dimension_names)):
+        return None, f'{kind} dimension keys must be distinct physical columns in one table'
+
+    value = _ungroup_source(body[2][0])
+    value_refs = [node for node in _source_walk(value) if node[0] == 'ref']
+    value_names = [local_physical_column(node, require_numeric=True)
+                   for node in value_refs]
+    if not value_refs or any(name is None for name in value_names):
+        return None, f'{kind} aggregate needs numeric physical columns in the same table'
+    if any(node[0] == 'call' for node in _source_walk(value)):
+        return None, f'{kind} nested row functions require separate grain evidence'
+
+    def numeric_scalar(node):
+        node = _ungroup_source(node)
+        if node[0] == 'ref':
+            return local_physical_column(node, require_numeric=True) is not None
+        if node[0] == 'atom':
+            return re.fullmatch(
+                r'(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', node[1]) is not None
+        if node[0] == 'group':
+            return numeric_scalar(node[1])
+        if node[0] == 'unary':
+            return node[1] in ('+', '-') and numeric_scalar(node[2])
+        return (node[0] == 'op' and node[1] in ('+', '-', '*', '/', '^')
+                and numeric_scalar(node[2]) and numeric_scalar(node[3]))
+
+    if not numeric_scalar(value):
+        return None, f'{kind} row aggregate only supports numeric scalar expressions'
+
+    safe_table = "'" + table_name.replace("'", "''") + "'"
+
+    def column(name):
+        return safe_table + '[' + name.replace(']', ']]') + ']'
+
+    if value[0] == 'ref':
+        inner = f'{inner_name}({column(value_names[0])})'
+    else:
+        row_iterators = {
+            'SUM': 'SUMX', 'AVERAGE': 'AVERAGEX', 'MIN': 'MINX', 'MAX': 'MAXX',
+        }
+        value_text = re.fullmatch(
+            r'\s*(?:SUM|AVG|AVERAGE|MIN|MAX)\s*\((.*)\)\s*',
+            body_text, re.IGNORECASE | re.DOTALL)
+        if not value_text:
+            return None, f'{kind} aggregate body is not a supported row expression'
+        def qualify_row_refs(node):
+            if node[0] == 'ref':
+                name = local_physical_column(node, require_numeric=True)
+                return ('ref', column(name), node[2], node[3])
+            if node[0] == 'op':
+                return (node[0], node[1], qualify_row_refs(node[2]),
+                        qualify_row_refs(node[3]))
+            if node[0] == 'unary':
+                return (node[0], node[1], qualify_row_refs(node[2]))
+            if node[0] == 'group':
+                return (node[0], qualify_row_refs(node[1]))
+            return node
+
+        scalar = _render_nullable_source(qualify_row_refs(value),
+                                        value_text.group(1).strip(),
+                                        'number', True)
+        inner = f'{row_iterators[inner_name]}({safe_table}, {scalar})'
+
+    dimension_refs = [column(name) for name in dimension_names]
+    if kind == 'EXCLUDE':
+        if not dimension_refs:
+            return inner, ''
+        expression = (
+            '/* EXCLUDE dimension-filter approximation; totals unverified */ '
+            f'CALCULATE({inner}, REMOVEFILTERS({", ".join(dimension_refs)}))')
+        return expression, ''
+
+    shelf_name = shelf.strip().upper() if isinstance(shelf, str) else ''
+    if outer:
+        if shelf_name and shelf_name != outer.upper():
+            return None, 'INCLUDE outer aggregate conflicts with its explicit shelf'
+        shelf_name = outer.upper()
+    shelf_iterators = {
+        'SUM': 'SUMX', 'AVG': 'AVERAGEX', 'MIN': 'MINX', 'MAX': 'MAXX',
+    }
+    if shelf_name not in shelf_iterators:
+        return None, 'INCLUDE requires explicit consistent SUM/AVG/MIN/MAX shelf evidence'
+    domain = (f'VALUES({dimension_refs[0]})' if len(dimension_refs) == 1
+              else f'SUMMARIZE({safe_table}, {", ".join(dimension_refs)})')
+    expression = (
+        f'/* shelf ({shelf_name.lower()}:) INCLUDE approximation; source filters and '
+        f'totals unverified */ {shelf_iterators[shelf_name]}({domain}, '
+        f'CALCULATE({inner}))')
+    return expression, ''
 
 
 def compile_verified_fixed_dimension(formula, *, table_name, table_columns,
@@ -1350,7 +1620,10 @@ def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
             and any(node[0] == 'op' and node[1] == '+' for node in nodes)):
         raise _SourceExpressionError("String and numeric addition need operand types")
 
-    safe_comparison_calls = _SOURCE_AGGREGATES | {
+    null_propagating_string_calls = {
+        'LEFT', 'RIGHT', 'MID', 'UPPER', 'LOWER', 'TRIM', 'LEN', 'STR',
+    }
+    safe_comparison_calls = _SOURCE_AGGREGATES | null_propagating_string_calls | {
         'IF', 'IIF', 'ISNULL', 'IFNULL', 'ZN', 'NULLIF',
         'BLANK', 'TRUE', 'FALSE', 'TODAY', 'NOW', 'PI',
         'USERNAME', 'FULLNAME',
@@ -1363,6 +1636,13 @@ def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
         if (node[0] == 'call' and node[1].upper() in ('USERNAME', 'FULLNAME')
                 and node[2]):
             raise _SourceExpressionError("Identity function takes no arguments")
+        if (node[0] == 'call'
+                and node[1].upper() in null_propagating_string_calls):
+            expected_args = {'LEFT': 2, 'RIGHT': 2, 'MID': 3}.get(
+                node[1].upper(), 1)
+            if len(node[2]) != expected_args:
+                raise _SourceExpressionError(
+                    "String function has an unsupported argument count")
         if node[0] == 'op' and node[1] in _SOURCE_COMPARISONS:
             for operand in node[2:]:
                 if any(part[0] == 'call'
@@ -1518,6 +1798,14 @@ def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
             return render(('op', upper, args[0], args[1]))
         if upper == 'NOT' and len(args) == 1:
             return render(('unary', 'NOT', args[0]))
+        if upper in null_propagating_string_calls and args:
+            rendered_args = [render(arg) for arg in args]
+            names = [variable() for _ in rendered_args]
+            bindings = ' '.join(
+                f'VAR {var} = {value}' for var, value in zip(names, rendered_args))
+            nulls = ' || '.join(f'ISBLANK({var})' for var in names)
+            call = f'{name}({", ".join(names)})'
+            return f'({bindings} RETURN IF({nulls}, BLANK(), {call}))'
         return name + '(' + ', '.join(render(arg) for arg in args) + ')'
 
     return render(root)
@@ -1525,16 +1813,71 @@ def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
 
 def _prepare_source_expression(text, *, table_name, column_table_map,
                                measure_names, is_calc_column, table_columns,
-                               calc_datatype, verified_row_scope):
+                               calc_datatype, verified_row_scope,
+                               date_columns=None, numeric_columns=None,
+                               nonphysical_names=()):
     """Fail closed on unknown row grain; otherwise preserve nullable logic."""
     try:
         root = _SourceExpressionParser(text).parse()
+        scalar_extrema_rewritten = False
+
+        def lower_scalar_extrema(node):
+            nonlocal scalar_extrema_rewritten
+            if node[0] == 'call':
+                reference = _scalar_numeric_minmax_reference(
+                    node, table_name=table_name, table_columns=table_columns,
+                    numeric_columns=numeric_columns,
+                    column_table_map=column_table_map, measure_names=measure_names,
+                    nonphysical_names=nonphysical_names)
+                if reference is not None:
+                    left, right = node[2]
+                    comparison = '<' if node[1].upper() == 'MIN' else '>'
+                    scalar_extrema_rewritten = True
+                    return ('call', 'IF', (
+                        ('call', 'ISNULL', (reference,)),
+                        ('call', 'BLANK', ()),
+                        ('call', 'IF', (('op', comparison, left, right), left, right))))
+                arguments = tuple(lower_scalar_extrema(arg) for arg in node[2])
+                node = ('call', node[1], arguments)
+                if (node[1].upper() in ('MIN', 'MAX')
+                    and len(arguments) == 1
+                    and isinstance(table_columns, (list, tuple, set, frozenset))
+                    and isinstance(date_columns, (list, tuple, set, frozenset))
+                    and all(isinstance(name, str) and name for name in date_columns)):
+                    year = _ungroup_source(arguments[0])
+                    if (year[0] == 'call' and year[1].upper() == 'YEAR'
+                            and len(year[2]) == 1):
+                        reference = _ungroup_source(year[2][0])
+                        if reference[0] == 'ref':
+                            owner, name = reference[2:]
+                            if (name in table_columns
+                                    and name in date_columns
+                                    and name not in measure_names
+                                    and (owner is None or owner == table_name)
+                                    and column_table_map.get(name, table_name) == table_name):
+                                aggregate = ('call', node[1], (reference,))
+                                scalar_extrema_rewritten = True
+                                return ('call', 'IF', (
+                                    ('call', 'ISNULL', (aggregate,)),
+                                    ('call', 'BLANK', ()),
+                                    ('call', 'YEAR', (aggregate,))))
+                return node
+            if node[0] == 'op':
+                return (node[0], node[1], lower_scalar_extrema(node[2]),
+                        lower_scalar_extrema(node[3]))
+            if node[0] in ('unary', 'group'):
+                return (*node[:-1], lower_scalar_extrema(node[-1]))
+            return node
+
+        root = lower_scalar_extrema(root)
         issue, force_arithmetic = _check_source_grain(
             root, table_name, column_table_map, measure_names,
             is_calc_column, table_columns, verified_row_scope)
         if issue:
             return text, issue
-        return _render_nullable_source(root, text, calc_datatype, force_arithmetic), None
+        return _render_nullable_source(
+            root, text, calc_datatype,
+            force_arithmetic or scalar_extrema_rewritten), None
     except (_SourceExpressionError, RecursionError):
         masked, _ = _protect_source_tokens(text)
         if (table_columns is None
@@ -2072,24 +2415,51 @@ def _extract_balanced_call(dax, func_name):
     return results
 
 
+def _convert_percentile(dax):
+    """Convert only PERCENTILE calls over one direct physical column."""
+    masked, restore = _protect_source_tokens(dax)
+    pattern = _get_func_pattern('PERCENTILE')
+    if not pattern.search(masked):
+        return dax
+
+    calls = _extract_balanced_call(masked, 'PERCENTILE')
+    if len(calls) != len(list(pattern.finditer(masked))):
+        return _unsupported_conversion(
+            'PERCENTILE requires a balanced call over a direct physical column')
+
+    for start, end, inner in reversed(calls):
+        args = _split_args(inner)
+        if (len(args) != 2 or not all(args)
+                or not _is_bare_column_ref(restore(args[0]))):
+            return _unsupported_conversion(
+                'PERCENTILE requires exactly two arguments and a direct physical column')
+        replacement = f"PERCENTILE.INC({restore(args[0])}, {restore(args[1])})"
+        masked = masked[:start] + replacement + masked[end:]
+
+    return restore(masked)
+
+
 def _convert_zn(dax):
     """ZN(expr) → IF(ISBLANK(expr), 0, expr)"""
-    for start, end, inner in reversed(_extract_balanced_call(dax, 'ZN')):
+    masked, restore = _protect_source_tokens(dax)
+    for start, end, inner in reversed(_extract_balanced_call(masked, 'ZN')):
+        inner = _convert_zn(restore(inner))
         replacement = f'IF(ISBLANK({inner}), 0, {inner})'
-        dax = dax[:start] + replacement + dax[end:]
-    return dax
+        masked = masked[:start] + replacement + masked[end:]
+    return restore(masked)
 
 
 def _convert_ifnull(dax):
     """IFNULL(a, b) → IF(ISBLANK(a), b, a)"""
-    for start, end, inner in reversed(_extract_balanced_call(dax, 'IFNULL')):
-        parts = _split_args(inner)
+    masked, restore = _protect_source_tokens(dax)
+    for start, end, inner in reversed(_extract_balanced_call(masked, 'IFNULL')):
+        parts = _split_args(_convert_ifnull(restore(inner)))
         if len(parts) == 2:
             replacement = f'IF(ISBLANK({parts[0].strip()}), {parts[1].strip()}, {parts[0].strip()})'
         else:
-            replacement = dax[start:end]
-        dax = dax[:start] + replacement + dax[end:]
-    return dax
+            replacement = masked[start:end]
+        masked = masked[:start] + replacement + masked[end:]
+    return restore(masked)
 
 
 def _convert_nullif(dax):
@@ -2189,22 +2559,32 @@ def _convert_lookup(dax, table_name, compute_using=None, column_table_map=None):
     """
     column_table_map = column_table_map or {}
     pattern = _RE_LOOKUP
-    match = pattern.search(dax)
-    while match:
-        start_pos = match.end()
-        depth = 1
-        i = start_pos
-        while i < len(dax) and depth > 0:
-            if dax[i] == '(':
-                depth += 1
-            elif dax[i] == ')':
-                depth -= 1
-            i += 1
-        if depth == 0:
-            inner = dax[start_pos:i - 1].strip()
-            args = _split_args(inner)
-            expr = args[0].strip() if args else 'BLANK()'
-            offset = args[1].strip() if len(args) > 1 else '0'
+    masked, restore = _protect_source_tokens(dax)
+
+    def rewrite(text):
+        result = []
+        cursor = 0
+        search_offset = 0
+        while True:
+            match = pattern.search(text, search_offset)
+            if not match:
+                break
+            start_pos = match.end()
+            depth = 1
+            end = start_pos
+            while end < len(text) and depth > 0:
+                if text[end] == '(':
+                    depth += 1
+                elif text[end] == ')':
+                    depth -= 1
+                end += 1
+            if depth:
+                search_offset = match.end()
+                continue
+
+            args = _split_args(text[start_pos:end - 1].strip())
+            expr = rewrite(args[0].strip()) if args else 'BLANK()'
+            offset = rewrite(args[1].strip()) if len(args) > 1 else '0'
             if compute_using:
                 order_col = compute_using[0]
                 order_table = column_table_map.get(order_col, table_name)
@@ -2223,9 +2603,14 @@ def _convert_lookup(dax, table_name, compute_using=None, column_table_map=None):
                 f"CALCULATE({expr}, "
                 f"OFFSET({offset}, ALLSELECTED('{table_name}'), {orderby}{partition_clause}))"
             )
-            dax = dax[:match.start()] + replacement + dax[i:]
-        match = pattern.search(dax, match.start() + 1 if depth != 0 else 0)
-    return dax
+            result.append(text[cursor:match.start()])
+            result.append(replacement)
+            cursor = end
+            search_offset = end
+        result.append(text[cursor:])
+        return ''.join(result)
+
+    return restore(rewrite(masked))
 
 
 def _convert_rawsql(dax):
@@ -2288,7 +2673,10 @@ def _convert_find(dax):
     Tableau: FIND(within_text, find_text[, start])
     DAX:     FIND(find_text, within_text[, start[, not_found]])
     """
-    dax = _RE_FINDNTH.sub('FIND( /* FINDNTH: occurrence arg needs manual review */ ', dax)
+    masked, restore = _protect_source_tokens(dax)
+    masked = _RE_FINDNTH.sub(
+        'FIND( /* FINDNTH: occurrence arg needs manual review */ ', masked)
+    dax = masked
     pattern = _RE_FIND
     match = pattern.search(dax)
     while match:
@@ -2304,15 +2692,20 @@ def _convert_find(dax):
         if depth != 0:
             break
         inner = dax[start_pos:i - 1]
+        inner = _convert_find(inner)
         args = _split_args(inner)
         if len(args) >= 2:
             swapped = [args[1].strip(), args[0].strip()] + [a.strip() for a in args[2:]]
+            if len(args) == 2:
+                swapped.extend(('1', '0'))
+            elif len(args) == 3:
+                swapped.append('0')
             replacement = f"FIND({', '.join(swapped)})"
         else:
             replacement = dax[match.start():i]
         dax = dax[:match.start()] + replacement + dax[i:]
         match = pattern.search(dax, match.start() + len(replacement))
-    return dax
+    return restore(dax)
 
 
 def _convert_str_to_format(dax):
@@ -2336,18 +2729,36 @@ def _convert_float_to_convert(dax):
 
 
 def _convert_datename(dax):
-    """DATENAME(part, date) → FORMAT(date, format_string)"""
+    """Convert DATENAME calls without rewriting quoted source text."""
     _DATENAME_FORMATS = {
         'year': '"YYYY"', 'quarter': '"Q"', 'month': '"MMMM"',
         'day': '"D"', 'weekday': '"DDDD"', 'dayofweek': '"DDDD"',
     }
-    def _xf(args, inner):
-        if len(args) >= 2:
-            part = args[0].strip().strip("'\"" ).lower()
-            fmt = _DATENAME_FORMATS.get(part, '"MMMM"')
-            return f'FORMAT({args[1].strip()}, {fmt})'
-        return f'DATENAME({inner})'
-    return _transform_func_call(dax, 'DATENAME', _xf)
+    _DATENAME_SCALAR_UNITS = {
+        'hour': 'HOUR', 'minute': 'MINUTE', 'second': 'SECOND',
+    }
+
+    def convert(args, inner, restore):
+        if len(args) != 2:
+            return _unsupported_conversion(
+                'DATENAME arity requires exactly two arguments')
+        part = restore(args[0]).strip().strip('\'"').lower()
+        date = restore(args[1]).strip()
+        scalar_function = _DATENAME_SCALAR_UNITS.get(part)
+        if scalar_function:
+            return (
+                f'IF(ISBLANK({date}), BLANK(), '
+                f'FORMAT({scalar_function}({date}), "0"))'
+            )
+        format_string = _DATENAME_FORMATS.get(part)
+        if format_string is None:
+            return _unsupported_conversion(
+                'DATENAME part is unsupported without verified Tableau semantics')
+        if date == 'BLANK()':
+            return 'BLANK()'
+        return f'IF(ISBLANK({date}), BLANK(), FORMAT({date}, {format_string}))'
+
+    return _transform_date_func_call(dax, 'DATENAME', convert)
 
 
 def _convert_corr_covar(dax, table_name='Table'):
@@ -2514,8 +2925,26 @@ def _convert_proper(dax):
     reassembles with space delimiters.  It works for single-space-separated
     words (the overwhelmingly common case).
     """
-    def _xf(args, inner):
-        s = inner.strip()
+    comment_prefix = '__proper_comment_'
+    while comment_prefix in dax:
+        comment_prefix = '_' + comment_prefix
+    comments = []
+    protected_token_pattern = re.compile(
+        _RE_NULL_PROTECTED_TOKEN.pattern + r'|/\*.*?\*/|//[^\r\n]*|--[^\r\n]*',
+        re.DOTALL,
+    )
+
+    def protect_comment(match):
+        token = match.group(0)
+        if token.startswith(('/*', '//', '--')):
+            comments.append(token)
+            return f'{comment_prefix}{len(comments) - 1}__'
+        return token
+
+    dax = protected_token_pattern.sub(protect_comment, dax)
+
+    def _xf(args, inner, restore):
+        s = restore(inner.strip())
         # Split into words via GENERATESERIES + MID/FIND, capitalize each
         # DAX limitation: no native PROPER.  Use the simple first-char
         # approach but add a migration comment noting the limitation.
@@ -2524,7 +2953,13 @@ def _convert_proper(dax):
             f' /* Title case: only capitalizes first character; '
             f'review if multi-word capitalisation needed */'
         )
-    return _transform_func_call(dax, 'PROPER', _xf)
+
+    dax = _transform_date_func_call(dax, 'PROPER', _xf)
+    return re.sub(
+        re.escape(comment_prefix) + r'(\d+)__',
+        lambda match: comments[int(match.group(1))],
+        dax,
+    )
 
 
 def _convert_split(dax):
@@ -2707,6 +3142,277 @@ def _transform_date_func_call(dax, func_name, transformer_fn):
         return text
 
     return restore(rewrite(masked))
+
+
+def _convert_makedatetime(dax, *, table_name=None, table_columns=None,
+                          column_table_map=None, measure_names=None,
+                          nonphysical_names=(), is_calc_column=False):
+    """Combine MAKEDATETIME arguments with scalar null propagation."""
+
+    def convert(args, inner, restore):
+        if len(args) != 2:
+            return None
+        date, time = (restore(arg).strip() for arg in args)
+        if date.upper() == 'BLANK()' or time.upper() == 'BLANK()':
+            return 'BLANK()'
+        combined = f'({date} + {time})'
+        return (f'IF(OR(ISBLANK({date}), ISBLANK({time})), '
+                f'BLANK(), {combined})')
+
+    return _transform_date_func_call(dax, 'MAKEDATETIME', convert)
+
+
+def _convert_datetrunc(dax, *, table_name=None, table_columns=None,
+                       date_columns=None, column_table_map=None,
+                       measure_names=None, nonphysical_names=(),
+                       is_calc_column=False):
+    """Map DATETRUNC calls, scalarizing only proven local day columns."""
+    startof_functions = {
+        'year': 'STARTOFYEAR',
+        'quarter': 'STARTOFQUARTER',
+        'month': 'STARTOFMONTH',
+    }
+    scalar_truncations = {
+        'year': lambda date: f'DATE(YEAR({date}), 1, 1)',
+        'quarter': lambda date: (
+            f'DATE(YEAR({date}), 3 * INT((MONTH({date}) - 1) / 3) + 1, 1)'),
+        'month': lambda date: f'DATE(YEAR({date}), MONTH({date}), 1)',
+    }
+    number_literal = re.compile(
+        r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\Z')
+    scalar_clock = re.compile(r'(?:TODAY|NOW)\s*\(\s*\)\Z', re.IGNORECASE)
+    physical_columns = (table_columns if isinstance(
+        table_columns, (list, tuple, set, frozenset)) else ())
+    proven_dates = (date_columns if isinstance(
+        date_columns, (list, tuple, set, frozenset)) else ())
+    measure_names = measure_names or ()
+    nonphysical_names = set(nonphysical_names)
+
+    def convert(args, inner, restore):
+        if len(args) != 2:
+            return _unsupported_conversion(
+                'DATETRUNC requires a supported granularity and date expression')
+        granularity = restore(args[0]).strip().strip("'\"").lower()
+        function = startof_functions.get(granularity)
+        date_expression = args[1].strip()
+        makedate_calls = _extract_balanced_call(date_expression, 'MAKEDATE')
+        if makedate_calls:
+            start, end, makedate_inner = makedate_calls[0]
+            makedate_args = _split_args(makedate_inner)
+            is_direct_call = not date_expression[:start].strip() and not date_expression[end:].strip()
+            if (not is_direct_call or len(makedate_args) != 3
+                    or not all(number_literal.fullmatch(arg.strip())
+                               for arg in makedate_args)):
+                return _unsupported_conversion(
+                    'DATETRUNC over MAKEDATE requires three numeric literal arguments')
+            scalar_function = scalar_truncations.get(granularity)
+            if scalar_function:
+                date = f"DATE({', '.join(arg.strip() for arg in makedate_args)})"
+                return scalar_function(date)
+
+        scalar_function = scalar_truncations.get(granularity)
+        if scalar_function and scalar_clock.fullmatch(date_expression):
+            return scalar_function(date_expression)
+
+        if function:
+            return f'{function}({date_expression})'
+        if granularity == 'day':
+            try:
+                reference = _ungroup_source(
+                    _SourceExpressionParser(
+                        restore(date_expression).strip()).parse())
+            except (_SourceExpressionError, RecursionError):
+                reference = None
+            if (is_calc_column and reference is not None
+                    and reference[0] == 'ref'):
+                owner, name = reference[2], reference[3]
+                if (owner in (None, table_name)
+                        and isinstance(table_columns, (list, tuple, set, frozenset))
+                        and isinstance(date_columns, (list, tuple, set, frozenset))
+                        and name in physical_columns and name in proven_dates
+                        and name not in measure_names
+                        and name not in nonphysical_names
+                        and isinstance(column_table_map, dict)
+                        and column_table_map.get(name) == table_name):
+                    date = restore(date_expression).strip()
+                    return (
+                        f'IF(ISBLANK({date}), BLANK(), '
+                        f'DATE(YEAR({date}), MONTH({date}), DAY({date})))')
+            return _unsupported_conversion(
+                'DATETRUNC day requires a proven local physical date column in calculated-column context')
+        return _unsupported_conversion(
+            'DATETRUNC granularity is unsupported without an explicit truncation policy')
+
+    return _transform_date_func_call(dax, 'DATETRUNC', convert)
+
+
+def _convert_datepart_quarter(dax):
+    """Convert DATEPART('quarter', date) to a null-preserving scalar expression."""
+    def convert(args, inner, restore):
+        if not args:
+            return _unsupported_conversion(
+                'DATEPART requires exactly two arguments')
+        part = restore(args[0]).strip().strip("'\"").lower()
+        if part != 'quarter':
+            return None
+        if len(args) != 2:
+            return _unsupported_conversion(
+                'DATEPART quarter requires exactly two arguments')
+        date = restore(args[1]).strip()
+        return (
+            f'IF(ISBLANK({date}), BLANK(), '
+            f'INT((MONTH({date}) - 1) / 3) + 1)'
+        )
+
+    return _transform_date_func_call(dax, 'DATEPART', convert)
+
+
+def _convert_datepart_direct_units(dax):
+    """Convert direct DATEPART units while preserving null date values."""
+    functions = {
+        'year': 'YEAR',
+        'month': 'MONTH',
+        'day': 'DAY',
+        'hour': 'HOUR',
+        'minute': 'MINUTE',
+        'second': 'SECOND',
+    }
+
+    def convert(args, inner, restore):
+        if not args:
+            return _unsupported_conversion(
+                'DATEPART requires exactly two arguments')
+        part = restore(args[0]).strip().strip('\'\"').lower()
+        if part in ('quarter', 'week'):
+            return None
+        function = functions.get(part)
+        if function is None:
+            if part == 'weekday' and len(args) == 2:
+                return _unsupported_conversion(
+                    'DATEPART weekday numbering depends on unverified Tableau week-start semantics')
+            if len(args) != 2:
+                return _unsupported_conversion(
+                    'DATEPART requires exactly two arguments')
+            return _unsupported_conversion(
+                'DATEPART part is unsupported without verified Tableau semantics')
+        if len(args) != 2:
+            return _unsupported_conversion(
+                'DATEPART direct unit requires exactly two arguments')
+        date = restore(args[1]).strip()
+        return f'IF(ISBLANK({date}), BLANK(), {function}({date}))'
+
+    return _transform_date_func_call(dax, 'DATEPART', convert)
+
+
+def _convert_datepart_week(dax):
+    """Reject DATEPART week calls without verified Tableau week metadata."""
+    def convert(args, inner, restore):
+        if not args:
+            return _unsupported_conversion(
+                'DATEPART requires exactly two arguments')
+        part = restore(args[0]).strip().strip("'\"").lower()
+        if part != 'week':
+            return None
+        if len(args) in (2, 3):
+            return _unsupported_conversion(
+                'Tableau week-start and numbering semantics require verified metadata')
+        return _unsupported_conversion(
+            'DATEPART week requires exactly two or three arguments')
+
+    return _transform_date_func_call(dax, 'DATEPART', convert)
+
+
+def _convert_startof_scalar_extrema(dax, *, table_name, table_columns,
+                                    date_columns, column_table_map,
+                                    measure_names, nonphysical_names):
+    """Lower only proven local physical MIN/MAX date inputs to scalar dates."""
+    aggregates = {'SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT', 'COUNTA',
+                  'COUNTBLANK', 'DISTINCTCOUNT', 'MEDIAN', 'STDEV', 'STDEV.S',
+                  'STDEV.P', 'VAR', 'VAR.S', 'VAR.P'}
+    aggregate_pattern = re.compile(
+        r'\b(?:' + '|'.join(re.escape(name) for name in aggregates) + r')\s*\(',
+        re.IGNORECASE,
+    )
+    granularities = {
+        'STARTOFYEAR': lambda value: f'DATE(YEAR({value}), 1, 1)',
+        'STARTOFMONTH': lambda value: f'DATE(YEAR({value}), MONTH({value}), 1)',
+        'STARTOFQUARTER': lambda value: (
+            f'DATE(YEAR({value}), 3 * INT((MONTH({value}) - 1) / 3) + 1, 1)'),
+    }
+    physical_columns = (table_columns if isinstance(
+        table_columns, (list, tuple, set, frozenset)) else ())
+    proven_dates = (date_columns if isinstance(
+        date_columns, (list, tuple, set, frozenset)) else ())
+
+    def walk(node):
+        if node[0] == 'call':
+            return ([node] if node[1].upper() in aggregates else []) + [
+                aggregate for arg in node[2] for aggregate in walk(arg)]
+        if node[0] == 'op':
+            return walk(node[2]) + walk(node[3])
+        if node[0] in ('unary', 'group'):
+            return walk(node[-1])
+        return []
+
+    issue = None
+
+    def convert_startof(args, inner, restore, function_name):
+        nonlocal issue
+        expression = restore(inner).strip()
+        try:
+            node = _ungroup_source(_SourceExpressionParser(expression).parse())
+            found_aggregates = walk(node)
+        except (_SourceExpressionError, RecursionError):
+            found_aggregates = aggregate_pattern.findall(inner)
+            node = None
+        if not found_aggregates:
+            return None
+
+        if (node is None or node[0] != 'call'
+                or node[1].upper() not in ('MIN', 'MAX')
+                or len(node[2]) != 1 or len(found_aggregates) != 1):
+            issue = 'DATETRUNC scalar aggregate requires verified local date-column grain'
+            return None
+
+        reference = _ungroup_source(node[2][0])
+        if reference[0] != 'ref':
+            issue = 'DATETRUNC scalar aggregate requires verified local date-column grain'
+            return None
+        spans = list(_dax_qualified_column_spans(reference[1]))
+        if len(spans) != 1 or spans[0][0] != 0 or spans[0][1] != len(reference[1]):
+            issue = 'DATETRUNC scalar aggregate requires verified local date-column grain'
+            return None
+        _, _, owner, name = spans[0]
+        if (not isinstance(table_columns, (list, tuple, set, frozenset))
+                or not isinstance(date_columns, (list, tuple, set, frozenset))
+                or any(not isinstance(value, str) or not value
+                       for value in date_columns)
+                or name not in physical_columns or name not in proven_dates
+                or name in measure_names or name in nonphysical_names
+                or owner != table_name
+                or column_table_map.get(name, table_name) != table_name):
+            issue = 'DATETRUNC scalar aggregate requires verified local date-column grain'
+            return None
+
+        variable = '__TableauDateExtremum'
+        suffix = 0
+        while re.search(r'\b' + re.escape(variable) + r'\b', dax, re.IGNORECASE):
+            suffix += 1
+            variable = f'__TableauDateExtremum{suffix}'
+        aggregate = f'{node[1].upper()}({reference[1]})'
+        return (f'VAR {variable} = {aggregate} RETURN '
+                f'IF(ISBLANK({variable}), BLANK(), '
+                f'{granularities[function_name](variable)})')
+
+    for function_name in granularities:
+        dax = _transform_date_func_call(
+            dax, function_name,
+            lambda args, inner, restore, name=function_name:
+            convert_startof(args, inner, restore, name),
+        )
+        if issue:
+            return dax, issue
+    return dax, None
 
 
 def _convert_date_casts(dax):
@@ -3619,11 +4325,13 @@ def _is_bare_column_ref(ref):
     return bool(_BARE_COL_REF_RE.match(ref))
 
 
-def _convert_lod_expressions(dax, table_name, column_table_map,
-                             allow_unverified_fixed=True):
+def _convert_lod_expressions(dax, table_name, column_table_map):
     """Convert legacy LOD forms; generation must not assume a FIXED grain."""
     masked, _ = _protect_source_tokens(dax)
-    if not allow_unverified_fixed and re.search(r'\{\s*FIXED\b', masked, re.IGNORECASE):
+    if re.search(r'\{\s*(?:INCLUDE|EXCLUDE)\b', masked, re.IGNORECASE):
+        return _unsupported_conversion(
+            'INCLUDE/EXCLUDE require verified source keys, shelf and target grain')
+    if re.search(r'\{\s*FIXED\b', masked, re.IGNORECASE):
         return _unsupported_conversion(
             'FIXED requires verified source filter scope, dimension grain, '
             'shelf aggregation and total grain')
@@ -3672,16 +4380,9 @@ def _convert_lod_expressions(dax, table_name, column_table_map,
                 return f"CALCULATE({agg_str}, ALLEXCEPT('{owner}', {', '.join(dim_refs)}))"
             owner = table_name.replace("'", "''")
             return f"CALCULATE({agg_str}, ALL('{owner}'))"
-        if keyword == 'INCLUDE':
-            return f"CALCULATE({agg_str})"
-        elif keyword == 'EXCLUDE':
-            if dim_refs:
-                if not all(_is_bare_column_ref(r) for r in dim_refs):
-                    return _unsupported_conversion(
-                        'level-of-detail dimensions require physical field bindings')
-                return f"CALCULATE({agg_str}, REMOVEFILTERS({', '.join(dim_refs)}))"
-            else:
-                return f"CALCULATE({agg_str})"
+        if keyword in ('INCLUDE', 'EXCLUDE'):
+            return _unsupported_conversion(
+                f'{keyword} requires verified source keys, shelf and target grain')
         return agg_str  # fallback
 
     def _find_colon(text):

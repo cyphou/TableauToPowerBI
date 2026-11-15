@@ -75,6 +75,43 @@ class TestPerformance(unittest.TestCase):
         # 40*3 + 10 = 130 > 100 → FAIL
         self.assertEqual(cat.checks[0].severity, FAIL)
 
+    def test_sum_rank_field_reference_is_not_a_table_calc(self):
+        calcs = [{'formula': 'SUM([Rank])'} for _ in range(16)]
+        cat = _check_performance(_make_extracted(calculations=calcs))
+
+        self.assertEqual(cat.checks[0].severity, PASS)
+        self.assertEqual(cat.checks[0].detail, 'Low complexity score (0).')
+
+    def test_rank_calls_contribute_to_complexity_score(self):
+        calcs = [{'formula': 'RANK(SUM([Sales]))'} for _ in range(16)]
+        cat = _check_performance(_make_extracted(calculations=calcs))
+
+        self.assertEqual(cat.checks[0].severity, WARN)
+        self.assertEqual(
+            cat.checks[0].detail,
+            'Moderate complexity (32): 0 LODs, 16 table calcs.',
+        )
+
+    def test_index_calls_contribute_to_complexity_score(self):
+        calcs = [{'formula': 'INDEX()'} for _ in range(16)]
+        cat = _check_performance(_make_extracted(calculations=calcs))
+
+        self.assertEqual(cat.checks[0].severity, WARN)
+        self.assertEqual(
+            cat.checks[0].detail,
+            'Moderate complexity (32): 0 LODs, 16 table calcs.',
+        )
+
+    def test_function_shaped_text_in_strings_and_comments_is_ignored(self):
+        calcs = [
+            {'formula': '"RANK(SUM([Sales]))" // INDEX()'}
+            for _ in range(16)
+        ]
+        cat = _check_performance(_make_extracted(calculations=calcs))
+
+        self.assertEqual(cat.checks[0].severity, PASS)
+        self.assertEqual(cat.checks[0].detail, 'Low complexity score (0).')
+
     def test_dax_expression_count_warn(self):
         calcs = [{'formula': 'x'} for _ in range(55)]
         ext = _make_extracted(calculations=calcs)

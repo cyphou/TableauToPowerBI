@@ -1713,6 +1713,11 @@ def _convert_prep_expression_to_m(expression):
         r'\[(?:[^\]]|\]\])*\]|"(?:[^"]|"")*"|\'(?:[^\']|\'\')*\'',
         protect_token, expr,
     )
+    if re.search(r'\bDATEPART\s*\(', expr, flags=re.IGNORECASE):
+        raise ValueError(
+            'Prep DATEPART requires a supported explicit date-part mapping/semantics '
+            'and cannot pass through to M'
+        )
 
     def convert_ifnull(match):
         source, fallback = match.groups()

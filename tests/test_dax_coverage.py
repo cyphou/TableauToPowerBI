@@ -98,7 +98,12 @@ class TestDatePartVariants(unittest.TestCase):
 
     def test_datepart_quarter(self):
         result = convert_tableau_formula_to_dax("DATEPART('quarter', [D])")
-        self.assertIn("QUARTER(", result)
+        self.assertEqual(
+            result,
+            "IF(ISBLANK('Table'[D]), BLANK(), INT((MONTH('Table'[D]) - 1) / 3) + 1)",
+        )
+        self.assertNotIn("QUARTER(", result)
+        self.assertNotIn("DATEPART", result)
 
     def test_datepart_month(self):
         result = convert_tableau_formula_to_dax("DATEPART('month', [D])")
@@ -122,11 +127,27 @@ class TestDatePartVariants(unittest.TestCase):
 
     def test_datepart_week(self):
         result = convert_tableau_formula_to_dax("DATEPART('week', [D])")
-        self.assertIn("WEEKNUM(", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("WEEKNUM", result)
+        self.assertNotIn("DATEPART", result)
+
+    def test_datepart_week_with_start_of_week_is_diagnostic(self):
+        result = convert_tableau_formula_to_dax("DATEPART('week', [D], 'monday')")
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("WEEKNUM(", result)
+        self.assertNotIn("DATEPART", result)
 
     def test_datepart_weekday(self):
         result = convert_tableau_formula_to_dax("DATEPART('weekday', [D])")
-        self.assertIn("WEEKDAY(", result)
+        quoted_text = convert_tableau_formula_to_dax('"WEEKDAY DATEPART"')
+        self.assertIn('"WEEKDAY DATEPART"', quoted_text)
+
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("WEEKDAY", result.upper())
+        self.assertNotIn("DATEPART", result.upper())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -697,9 +718,9 @@ class TestLODEdgeCases(unittest.TestCase):
             table_name="Orders",
             column_table_map={"Region": "Orders", "Category": "Orders", "Sales": "Orders"},
         )
-        self.assertIn("ALLEXCEPT", result)
-        self.assertIn("Region", result)
-        self.assertIn("Category", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('ALLEXCEPT', result.upper())
 
     def test_exclude_with_cross_table(self):
         result = convert_tableau_formula_to_dax(
@@ -707,8 +728,8 @@ class TestLODEdgeCases(unittest.TestCase):
             table_name="Orders",
             column_table_map={"Region": "Products", "Sales": "Orders"},
         )
-        self.assertIn("REMOVEFILTERS", result)
-        self.assertIn("Products", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_include_lod(self):
         result = convert_tableau_formula_to_dax(
@@ -716,8 +737,8 @@ class TestLODEdgeCases(unittest.TestCase):
             table_name="Orders",
             column_table_map={"SubCategory": "Orders", "Profit": "Orders"},
         )
-        self.assertIn("CALCULATE", result)
-        self.assertNotIn("{INCLUDE", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_nested_lod_balanced_braces(self):
         """Nested FIXED aggregation is unsupported without grain evidence."""
@@ -1181,8 +1202,9 @@ class TestComplexFormulaCoverage(unittest.TestCase):
             table_name="Orders",
             column_table_map={"Category": "Orders", "Customer": "Orders"},
         )
-        self.assertIn("CALCULATE", result)
-        self.assertIn("DISTINCTCOUNT", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('ALLEXCEPT', result.upper())
 
     def test_formula_with_zn_and_sum(self):
         result = convert_tableau_formula_to_dax(
@@ -1427,18 +1449,18 @@ class TestLODMultiDimension(unittest.TestCase):
     """Sprint 23.4 — Multi-dimension LOD expressions."""
 
     def test_fixed_two_dims(self):
-        """{FIXED [A], [B] : SUM([C])} → CALCULATE(SUM, ALLEXCEPT(T, A, B))."""
+        """Multi-dimension FIXED requires verified grain evidence."""
         result = convert_tableau_formula_to_dax(
             "{FIXED [Region], [Category] : SUM([Sales])}",
             table_name="Orders",
             column_table_map={"Region": "Orders", "Category": "Orders", "Sales": "Orders"},
         )
-        self.assertIn('ALLEXCEPT', result)
-        self.assertIn("'Orders'[Region]", result)
-        self.assertIn("'Orders'[Category]", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('ALLEXCEPT', result.upper())
 
     def test_fixed_three_dims(self):
-        """{FIXED [A], [B], [C] : COUNT([D])} → three dimensions in ALLEXCEPT."""
+        """Multi-dimension FIXED requires verified grain evidence."""
         result = convert_tableau_formula_to_dax(
             "{FIXED [Year], [Quarter], [Region] : COUNT([OrderID])}",
             table_name="Sales",
@@ -1447,21 +1469,20 @@ class TestLODMultiDimension(unittest.TestCase):
                 "Region": "Sales", "OrderID": "Sales"
             },
         )
-        self.assertIn('ALLEXCEPT', result)
-        self.assertIn("'Sales'[Year]", result)
-        self.assertIn("'Sales'[Quarter]", result)
-        self.assertIn("'Sales'[Region]", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('ALLEXCEPT', result.upper())
+        self.assertNotIn("'Sales'[Region]", result)
 
     def test_exclude_multi_dim(self):
-        """{EXCLUDE [A], [B] : AVG([C])} → REMOVEFILTERS on both dims."""
+        """Raw EXCLUDE cannot be compiled without visual and total grain."""
         result = convert_tableau_formula_to_dax(
             "{EXCLUDE [State], [City] : AVG([Profit])}",
             table_name="Geo",
             column_table_map={"State": "Geo", "City": "Geo", "Profit": "Geo"},
         )
-        self.assertIn('REMOVEFILTERS', result)
-        self.assertIn("'Geo'[State]", result)
-        self.assertIn("'Geo'[City]", result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
 
     def test_fixed_cross_table_dims(self):
         """Cross-table FIXED requires verified source and target grain."""

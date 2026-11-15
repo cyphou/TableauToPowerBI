@@ -662,9 +662,9 @@ schemas described in the scope contract above.
 | `YEAR(date)` | `Date.Year([col])` | |
 | `MONTH(date)` | `Date.Month([col])` | |
 | `DAY(date)` | `Date.Day([col])` | |
-| `DATEPART('quarter', date)` | `Date.QuarterOfYear([col])` | |
-| `DATEPART('week', date)` | `Date.WeekOfYear([col])` | |
-| `DATEPART('dayofweek', date)` | `Date.DayOfWeek([col])` | |
+| `DATEPART('quarter', date)` | Not supported | Prep conversion raises `ValueError`; no automatic `Date.QuarterOfYear` mapping is implemented. |
+| `DATEPART('week', date)` | Not supported | Prep conversion raises `ValueError`; week-start and numbering semantics are not inferred. |
+| `DATEPART('dayofweek', date)` | Not supported | Prep conversion raises `ValueError`; weekday numbering semantics are not inferred. |
 | `DATEADD('month', n, date)` | `Date.AddMonths([col], n)` | |
 | `DATEADD('day', n, date)` | `Date.AddDays([col], n)` | |
 | `DATEADD('year', n, date)` | `Date.AddYears([col], n)` | |

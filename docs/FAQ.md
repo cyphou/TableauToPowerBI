@@ -530,6 +530,15 @@ is not sufficient to establish aggregation at a coarser view grain. See the
 for the exact path and the approximation boundaries. Native refresh, source
 filter behavior and value parity require separate verification.
 
+INCLUDE and EXCLUDE have narrower, separate rules. INCLUDE requires explicit,
+consistent SUM/AVG/MIN/MAX shelf evidence plus same-table physical numeric keys
+and values; it emits an annotated iterator at the included grain. EXCLUDE can
+emit an annotated `CALCULATE(..., REMOVEFILTERS(...))` for same-table physical
+keys and supported numeric aggregates. Cross-table or calculated keys,
+ambiguous shelf evidence, nested LODs, and an outer aggregate over EXCLUDE remain
+diagnostic `BLANK()` cases. Their source-filter behavior and grand totals are
+not claimed as exact.
+
 ### How does the SUM(IF) → SUMX conversion work?
 
 In Tableau, `SUM(IF condition THEN value ELSE 0 END)` is common. DAX's `SUM()` only accepts a single column, so the tool converts to iterator functions:
