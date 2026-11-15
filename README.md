@@ -980,7 +980,7 @@ SharedSales/
 | LOD | `{FIXED [dim] : AGG}` | Exact DAX with proven scope; otherwise a bounded, warned shelf iterator or diagnostic `TODO`/`BLANK()` |
 | LOD | `{INCLUDE [dim] : AGG}` | `CALCULATE(AGG)` |
 | LOD | `{EXCLUDE [dim] : AGG}` | `CALCULATE(AGG, REMOVEFILTERS)` |
-| Table Calc | `RUNNING_SUM / AVG / COUNT` | `CALCULATE(SUM/AVERAGE/COUNT)` |
+| Table Calc | `RUNNING_SUM / AVG / COUNT / MAX / MIN` | Diagnostic `TODO`/`BLANK()` without a resolved ordering column |
 | Table Calc | `RANK`, `RANK_UNIQUE`, `RANK_DENSE` | `RANKX(ALL())` |
 | Table Calc | `WINDOW_SUM / AVG / MAX / MIN` | `CALCULATE()` |
 | Iterator | `SUM(IF(...))` | `SUMX('table', IF(...))` |
@@ -991,6 +991,7 @@ SharedSales/
 | Security | `USERNAME()` | `USERPRINCIPALNAME()` |
 | Security | `FULLNAME()` | `USERPRINCIPALNAME()` |
 | Security | `ISMEMBEROF("group")` | `TRUE()` + RLS role per group |
+| Security | `USERATTRIBUTE(...)`, `USERATTRIBUTEINCLUDES(...)`, `ISUSERNAME(...)` | Diagnostic `TODO`/`BLANK()`; explicit identity/attribute mapping required |
 
 </details>
 
@@ -1393,10 +1394,10 @@ use the review checklist before any publishing step.
 
 ## ⚠️ Known Limitations
 
-- `MAKEPOINT()` (spatial) has no DAX equivalent — skipped
+- `MAKEPOINT()` has no DAX equivalent; the converter emits a diagnostic `TODO`/`BLANK()` fallback. A map visual using latitude/longitude fields must be configured separately.
 - `PREVIOUS_VALUE()` / `LOOKUP()` use OFFSET-based DAX — may need manual tuning
 - Data source connection strings must be reconfigured in Power Query after migration
-- Some table calculations (`INDEX()`, `SIZE()`) are approximated
+- `INDEX()` uses an intentionally lossy constant fallback `1`; `SIZE()` and `FIRST()`/`LAST()` remain diagnostic until mark grain or ordering/partition context is resolved
 - See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for the full list
 
 ---

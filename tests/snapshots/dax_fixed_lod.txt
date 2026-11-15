@@ -1,1 +1,1 @@
-CALCULATE(SUM('Table'[Sales]), ALLEXCEPT('Table', 'Table'[Customer]))
+/* TODO: DAX conversion validation failed for measure: level-of-detail expression requires verified source and target grain */ BLANK()

@@ -487,10 +487,10 @@ python migrate.py batch ./one_workbook --prep flow.tfl --output-dir ./output
 
 Some Tableau functions have no direct DAX equivalent:
 
-- `MAKEPOINT()` — no DAX equivalent; use lat/lon columns in a map visual
+- `MAKEPOINT()` has no DAX equivalent; the converter emits a diagnostic `TODO`/`BLANK()` fallback. A map visual using latitude/longitude fields is a separate manual alternative.
 - `PREVIOUS_VALUE()` — automatically converted to OFFSET-based DAX pattern (may need manual adjustment for complex seed logic)
 - `LOOKUP()` — automatically converted to OFFSET-based DAX pattern
-- Table functions (`SIZE()` → `COUNTROWS(ALLSELECTED())`, `INDEX()` → `RANKX()`) — approximated, may need adjustment
+- `SIZE()` emits diagnostic `TODO`/`BLANK()` until mark grain and partition context establish the row set to count. `INDEX()` uses the intentionally lossy constant fallback `1`; it is not Tableau index/rank semantics and is not translated to `RANKX()` or `ROWNUMBER()`.
 
 Most complex patterns **are** handled automatically:
 - FIXED LOD expressions use exact verified DAX, shelf-derived annotated
@@ -498,7 +498,7 @@ Most complex patterns **are** handled automatically:
 - `SUM(IF ...)` → `SUMX('table', IF(...))` iterator conversion
 - Nested `IF/ELSEIF/ELSE/END` → nested `IF()` calls
 - Window functions (`WINDOW_AVG`, `WINDOW_SUM`) → `CALCULATE(..., ALL('table'))`
-- Table calculations (`RUNNING_SUM`, `RANK`) → `CALCULATE(SUM(...))`, `RANKX(ALL(...))`
+- `RUNNING_SUM/AVG/COUNT/MAX/MIN` → diagnostic `TODO`/`BLANK()` because the current converter does not receive a resolved ordering column. `RANK` uses `RANKX(ALL(...))`.
 
 ### How are LOD expressions converted?
 
@@ -557,7 +557,7 @@ This applies to all aggregate+condition patterns:
 
 ### How is Row-Level Security (RLS) migrated?
 
-Tableau has multiple security mechanisms, all converted to Power BI RLS roles:
+Tableau security mechanisms that can be represented from extracted user mappings and supported identity/group functions can be converted to Power BI RLS roles. Other user-attribute functions remain diagnostic until their identity mapping is explicitly defined:
 
 1. **User filters** (`<user-filter>` with user→value mappings):
    ```tmdl
@@ -579,6 +579,8 @@ Tableau has multiple security mechanisms, all converted to Power BI RLS roles:
        tablePermission Orders
            filterExpression = TRUE()  /* Assign Azure AD group members to this role */
    ```
+
+      `USERATTRIBUTE(...)`, `USERATTRIBUTEINCLUDES(...)`, and `ISUSERNAME(...)` emit a diagnostic `TODO`/`BLANK()` fallback. The migration does not infer a mapping from Tableau user attributes to Microsoft Entra identities or RLS rules.
 
 ### What about parameters?
 

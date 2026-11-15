@@ -8,6 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from tableau_export.dax_converter import convert_tableau_formula_to_dax
+from powerbi_import.dax_validator import validate_dax_expression
 
 
 class TestIndexInCompound(unittest.TestCase):
@@ -25,7 +26,10 @@ class TestIndexInCompound(unittest.TestCase):
     def test_index_divided_by_size(self):
         result = convert_tableau_formula_to_dax('INDEX() / SIZE()')
         self.assertIn('INDEX fallback', result)
-        self.assertIn('COUNTROWS', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('ALLSELECTED', result)
 
 
 class TestSizeInCompound(unittest.TestCase):
@@ -33,13 +37,17 @@ class TestSizeInCompound(unittest.TestCase):
 
     def test_size_standalone(self):
         result = convert_tableau_formula_to_dax('SIZE()')
-        self.assertIn('COUNTROWS', result)
-        self.assertIn('ALLSELECTED', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('ALLSELECTED', result)
 
     def test_size_in_if(self):
         result = convert_tableau_formula_to_dax('IF SIZE() > 10 THEN "Large" ELSE "Small" END')
         self.assertIn('TODO: DAX conversion validation failed', result)
         self.assertIn('BLANK()', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('ALLSELECTED', result)
 
 
 class TestFirstLastInCompound(unittest.TestCase):
@@ -47,13 +55,19 @@ class TestFirstLastInCompound(unittest.TestCase):
 
     def test_first_standalone(self):
         result = convert_tableau_formula_to_dax('FIRST()')
-        self.assertIn('RANKX', result)
-        self.assertIn('ALLSELECTED', result)
+        self.assertIn('TODO:', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('RANKX', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('__SortColumn__', result)
 
     def test_last_standalone(self):
         result = convert_tableau_formula_to_dax('LAST()')
-        self.assertIn('RANKX', result)
-        self.assertIn('COUNTROWS', result)
+        self.assertIn('TODO:', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('RANKX', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('__SortColumn__', result)
 
     def test_first_in_if(self):
         result = convert_tableau_formula_to_dax('IF FIRST() = 0 THEN [Sales] END')
@@ -137,7 +151,9 @@ class TestTableCalcEdgeCases(unittest.TestCase):
 
     def test_running_sum_nested_expr(self):
         result = convert_tableau_formula_to_dax('RUNNING_SUM(SUM([Sales]) * 2)')
-        self.assertIn('CALCULATE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
 
     def test_total_countd(self):
         result = convert_tableau_formula_to_dax('TOTAL(COUNTD([Customer]))')
@@ -149,7 +165,9 @@ class TestTableCalcEdgeCases(unittest.TestCase):
             compute_using=['Date'],
             table_name='Orders'
         )
-        self.assertIn('CALCULATE', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
 
 
 class TestDateConverterEdgeCases(unittest.TestCase):
@@ -286,17 +304,24 @@ class TestSpatialPlaceholders(unittest.TestCase):
 
     def test_buffer(self):
         result = convert_tableau_formula_to_dax('BUFFER([Shape], 10)')
-        self.assertIn('BUFFER', result.upper())
-        # Should contain a comment about no DAX equivalent
-        self.assertIn('spatial', result.lower())
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('BUFFER', result.upper())
+        self.assertEqual(validate_dax_expression(result), ['unsupported DAX conversion placeholder'])
 
     def test_area(self):
         result = convert_tableau_formula_to_dax('AREA([Shape])')
-        self.assertIn('AREA', result.upper())
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('AREA', result.upper())
+        self.assertEqual(validate_dax_expression(result), ['unsupported DAX conversion placeholder'])
 
     def test_intersection(self):
         result = convert_tableau_formula_to_dax('INTERSECTION([S1], [S2])')
-        self.assertIn('INTERSECTION', result.upper())
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('INTERSECTION', result.upper())
+        self.assertEqual(validate_dax_expression(result), ['unsupported DAX conversion placeholder'])
 
 
 class TestRegexpSmartPatterns(unittest.TestCase):

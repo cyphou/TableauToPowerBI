@@ -50,6 +50,15 @@ class TestWindowCorrelationCovariance(unittest.TestCase):
         # Wrapped in CALCULATE for windowing context
         self.assertIn('CALCULATE(', result)
 
+    def test_window_corr_with_frame_bounds_fails_closed(self):
+        result = convert_tableau_formula_to_dax(
+            'WINDOW_CORR(SUM([Sales]), SUM([Profit]), -2, 0)',
+            table_name='Orders'
+        )
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn("ALL('Orders')", result)
+
     def test_window_covar_produces_var_pattern(self):
         """WINDOW_COVAR should produce sample covariance (N-1 divisor)."""
         result = convert_tableau_formula_to_dax(
@@ -62,6 +71,15 @@ class TestWindowCorrelationCovariance(unittest.TestCase):
         self.assertIn('_N - 1', result)  # sample covariance divides by N-1
         self.assertIn("'Financials'", result)
         self.assertIn('CALCULATE(', result)
+
+    def test_window_covar_with_frame_bounds_fails_closed(self):
+        result = convert_tableau_formula_to_dax(
+            'WINDOW_COVAR(SUM([Revenue]), SUM([Cost]), -2, 0)',
+            table_name='Financials'
+        )
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn("ALL('Financials')", result)
 
     def test_window_covarp_produces_var_pattern(self):
         """WINDOW_COVARP should produce population covariance (N divisor)."""
@@ -76,6 +94,15 @@ class TestWindowCorrelationCovariance(unittest.TestCase):
         self.assertIn('_N, 0)', result)  # DIVIDE(..., _N, 0)
         self.assertNotIn('_N - 1', result)
         self.assertIn("'Data'", result)
+
+    def test_window_covarp_with_frame_bounds_fails_closed(self):
+        result = convert_tableau_formula_to_dax(
+            'WINDOW_COVARP(SUM([X]), SUM([Y]), -2, 0)',
+            table_name='Data'
+        )
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn("ALL('Data')", result)
 
     def test_window_corr_with_compute_using(self):
         """WINDOW_CORR with compute_using should use ALLEXCEPT."""

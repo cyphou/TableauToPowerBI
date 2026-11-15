@@ -17,7 +17,8 @@ __all__ = ['validate_dax_expression', 'DaxExpressionValidator',
 #: separately because DAX has a legitimate DATEADD of its own.
 TABLEAU_LEAK_FUNCTIONS = frozenset({
     'ATTR', 'COUNTD', 'DATEPART', 'DATETRUNC', 'IFNULL', 'ISNULL',
-    'LOOKUP', 'PREVIOUS_VALUE', 'ZN',
+    'ISUSERNAME', 'LOOKUP', 'PREVIOUS_VALUE', 'USERATTRIBUTE',
+    'USERATTRIBUTEINCLUDES', 'ZN', 'FIRST', 'LAST',
     'RANK_DENSE', 'RANK_MODIFIED', 'RANK_PERCENTILE', 'RANK_UNIQUE',
     'RUNNING_AVG', 'RUNNING_COUNT', 'RUNNING_MAX', 'RUNNING_MIN', 'RUNNING_SUM',
     'WINDOW_AVG', 'WINDOW_COUNT', 'WINDOW_MAX', 'WINDOW_MIN', 'WINDOW_SUM',

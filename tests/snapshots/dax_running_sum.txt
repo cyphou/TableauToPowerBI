@@ -1,1 +1,1 @@
-CALCULATE(SUM('Table'[Sales]), FILTER(ALLSELECTED('Table'), TRUE()))
+/* TODO: DAX conversion validation failed for measure: running table calculation requires verified ordering && partition context */ BLANK()

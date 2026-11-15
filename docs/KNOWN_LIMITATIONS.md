@@ -465,11 +465,12 @@ validation do not establish native execution or source/target value parity.
 
 | Tableau Function | Output | Reason |
 |-----------------|--------|--------|
-| MAKEPOINT, MAKELINE, DISTANCE, BUFFER, AREA, INTERSECTION | `0` + comment | No spatial functions in DAX |
-| HEXBINX, HEXBINY | `0` + comment | No hex-binning in DAX |
-| COLLECT | `0` + comment | No spatial collection |
-| SCRIPT_BOOL/INT/REAL/STR | ✅ `scriptVisual` (Python or R) + `BLANK()` DAX fallback | R/Python scripting → PBI Python/R visual containers with script text and input columns. `BLANK()` DAX measure generated for non-visual contexts. Requires Python/R runtime configured in PBI Desktop |
-| **SPLIT** | ✅ IMPLEMENTED — `SPLIT(string, delim, token)` → `PATHITEM(SUBSTITUTE(string, delim, "|"), token)`. Negative index → `PATHITEMREVERSE`. 2-arg form defaults to token 1 | Requires pipe character not present in data |
+| MAKEPOINT, MAKELINE, DISTANCE, BUFFER, AREA, INTERSECTION | Diagnostic `TODO`/`BLANK()` fallback | No DAX spatial equivalent; the formula fallback does not create a spatial visual |
+| HEXBINX, HEXBINY | Diagnostic `TODO`/`BLANK()` fallback | No DAX hex-binning equivalent or generated hex visual |
+| COLLECT | Diagnostic `TODO`/`BLANK()` fallback | No DAX spatial aggregate equivalent |
+| SCRIPT_BOOL/INT/REAL/STR | Diagnostic `TODO`/`BLANK()` DAX fallback; PBIR may separately create a `scriptVisual` | Script visuals depend on worksheet-level source detection; generation does not establish Python/R runtime availability or output parity |
+| USERATTRIBUTE, USERATTRIBUTEINCLUDES, ISUSERNAME | Diagnostic `TODO`/`BLANK()` fallback | Requires explicit identity and user-attribute mapping; no automatic Entra/RLS mapping is inferred |
+| **SPLIT** | ⚠️ Guarded `PATHITEM`/`PATHITEMREVERSE` approximation; 2-arg form defaults to token 1 | Blank input returns `BLANK()`. A literal `|` delimiter uses `PATHITEM` directly. For other delimiters, the converter substitutes `|` and returns `BLANK()` if the source contains `|`, avoiding a potentially incorrect token. Negative indexes use `PATHITEMREVERSE`. |
 
 ### Approximated Functions
 
@@ -479,10 +480,15 @@ validation do not establish native execution or source/target value parity.
 | REGEXP_REPLACE | Chained `SUBSTITUTE()` for common patterns; `CONTAINSSTRING`+`SUBSTITUTE` for character classes | No true regex groups or backreferences |
 | REGEXP_EXTRACT | `MID(field, SEARCH("prefix", field) + len, LEN(field))` for fixed-prefix patterns | Falls back to `BLANK()` for complex patterns |
 | REGEXP_EXTRACT_NTH | Delimiter→PATHITEM, prefix→MID/SEARCH, alternation→IF/CONTAINSSTRING | Falls back to `BLANK()` for complex patterns |
+| FIRST/LAST | Diagnostic `TODO`/`BLANK()` | A resolved ordering/partition column is required; the converter does not invent a sort key |
+| INDEX | `1` compatibility fallback | Intentionally lossy; not Tableau index/rank semantics and not a `RANKX`/`ROWNUMBER` conversion |
+| SIZE | Diagnostic `TODO`/`BLANK()` | Requires verified mark grain and partition context; `compute_using` dimensions alone do not prove the row set |
 | RANK_PERCENTILE | `DIVIDE(RANKX()-1, COUNTROWS()-1)` | Edge cases with ties |
-| RUNNING_SUM/AVG/COUNT | `CALCULATE(AGG, FILTER(ALLSELECTED(...)))` | Proper window semantics with partition support |
+| RUNNING_SUM/AVG/COUNT/MAX/MIN | Diagnostic `TODO`/`BLANK()` | The active converter receives addressing dimensions but no resolved ordering column; it does not invent a running window. RUNNING_COUNT over COUNTD also requires verified mark ordering and partitioning. |
 | WINDOW_SUM/AVG/MAX/MIN | `CALCULATE(inner, ALL/ALLEXCEPT)` with OFFSET-based frame boundaries | Frame start/end positions approximated via OFFSET for specific patterns |
-| LTRIM/RTRIM | ✅ FIXED — `LTRIM` → MID-based left-trim (preserves trailing spaces); `RTRIM` → LEFT-based right-trim (preserves leading spaces) | Distinct from TRIM which removes both sides |
+| WINDOW_PERCENTILE | Active converter emits diagnostic `TODO`/`BLANK()` | Mark grain, percentile context, and optional frame semantics are not verified; a standalone legacy helper is not used by the main path |
+| WINDOW_CORR/COVAR/COVARP | Unbounded two-expression calls use custom `VAR`/`SUMX` approximations; calls with frame bounds emit diagnostic `TODO`/`BLANK()` | Partition and frame semantics remain approximate or unsupported; no value parity is claimed |
+| LTRIM/RTRIM | ✅ FIXED — `LTRIM` uses `MID`/`FIND`; `RTRIM` uses `LEFT` with `MAXX` over original-string positions. Both preserve the opposite edge and repeated internal ordinary spaces. | Blank and all-space inputs are guarded; no Desktop runtime parity is claimed |
 | String `+` → `&` | All expression depths | Converted at all nesting levels since v4.0 |
 
 ## Visual Mapping Approximations

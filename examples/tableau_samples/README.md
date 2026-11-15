@@ -168,7 +168,7 @@ nested LOD are outside that fallback. See the
   - Aggregations: `COUNTA`, `COUNTD` → `DISTINCTCOUNT`, `SUM(IF)` → `SUMX`
   - LOD INCLUDE: `{INCLUDE [channel] : AVG([deal_value])}` → `CALCULATE(AVERAGE)`
   - Window: `WINDOW_MAX`, `WINDOW_MIN` → `CALCULATE(MAX/MIN, ALL)`
-  - Table calc: `RUNNING_COUNT` → `CALCULATE(COUNT)`
+  - Table calc source: `RUNNING_COUNT` (active DAX conversion is diagnostic until an ordering column is resolved)
   - Type: `INT`, `STR` → `FORMAT`
 - ✅ Column aliases (Email → Email Marketing, SEM → Search Engine Marketing, etc.)
 - ✅ Sort orders (lead_status manual funnel sort, channel ascending)
@@ -194,6 +194,8 @@ Output is generated in `artifacts/powerbi_projects/<name>/`.
 ---
 
 ## 📊 Feature Coverage Matrix
+
+Checkmarks indicate that a feature occurs in a source sample; they do not assert that every formula is converted or semantically equivalent.
 
 | Feature | Superstore | HR | Financial | BigQuery | Security | Enterprise | Mfg IoT | Marketing |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|

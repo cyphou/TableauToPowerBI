@@ -986,6 +986,36 @@ class TestWindowFunctionsFrameBounds(unittest.TestCase):
         self.assertIn('WINDOW(', result)
         self.assertIn("ALL('Orders')", result)
 
+    def test_window_sum_non_integer_frame_bound_is_diagnostic(self):
+        result = _convert_window_functions(
+            'WINDOW_SUM(SUM([Sales]), FIRST()+1, 0)',
+            'Orders'
+        )
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE(', result)
+        self.assertNotIn("ALL('Orders')", result)
+
+    def test_window_sum_partial_frame_bounds_are_diagnostic(self):
+        result = _convert_window_functions(
+            'WINDOW_SUM(SUM([Sales]), -2)',
+            'Orders'
+        )
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE(', result)
+        self.assertNotIn("ALL('Orders')", result)
+
+    def test_window_sum_extra_frame_bound_is_diagnostic(self):
+        result = _convert_window_functions(
+            'WINDOW_SUM(SUM([Sales]), -2, 0, 1)',
+            'Orders'
+        )
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE(', result)
+        self.assertNotIn("ALL('Orders')", result)
+
     def test_window_count_maps_to_countrows(self):
         result = _convert_window_functions(
             'WINDOW_COUNT(COUNT([ID]), -3, 0)',
@@ -1061,7 +1091,9 @@ class TestWindowCorrCovar(unittest.TestCase):
             'T'
         )
         self.assertIn('insufficient arguments', result)
-        self.assertIn('0', result)
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1113,21 +1145,29 @@ class TestRunningAndTotal(unittest.TestCase):
 
     def test_running_count(self):
         result = _convert_running_functions('RUNNING_COUNT(COUNT([ID]))', 'T')
-        self.assertIn('CALCULATE', result)
-        self.assertIn('FILTER', result)
-        self.assertIn('ALLSELECTED', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
 
     def test_running_max(self):
         result = _convert_running_functions('RUNNING_MAX(MAX([Val]))', 'T')
-        self.assertIn('CALCULATE', result)
-        self.assertIn('MAX([Val])', result)
-        self.assertNotIn('RUNNING_MAX', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
 
     def test_running_min(self):
         result = _convert_running_functions('RUNNING_MIN(MIN([Val]))', 'T')
-        self.assertIn('CALCULATE', result)
-        self.assertIn('MIN([Val])', result)
-        self.assertNotIn('RUNNING_MIN', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
+
+    def test_running_sum_without_ordering_is_diagnostic(self):
+        result = _convert_running_functions('RUNNING_SUM(SUM([Sales]))', 'Fact')
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
+        self.assertNotIn('ALLSELECTED', result)
+        self.assertNotIn('__SortColumn__', result)
 
     def test_total_function(self):
         result = _convert_total_function('TOTAL(SUM([Revenue]))', 'Sales')
@@ -1584,15 +1624,28 @@ class TestMultiPhaseInteractions(unittest.TestCase):
         self.assertIn('CALCULATE', result)
 
     def test_running_count_via_main(self):
-        # RUNNING_COUNT is in _SIMPLE_FUNCTION_MAP as RUNNING_COUNT( → CALCULATE(
-        # so it's handled by simple regex before _convert_running_functions
+        # The main converter fails closed when ordering and partition context are unresolved.
         result = convert_tableau_formula_to_dax(
             'RUNNING_COUNT(COUNT([ID]))',
             table_name='T',
             column_table_map={'ID': 'T'}
         )
-        self.assertIn('CALCULATE', result)
-        self.assertIn('COUNT', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
+
+    def test_running_sum_partition_without_ordering_is_diagnostic_via_main(self):
+        result = convert_tableau_formula_to_dax(
+            'RUNNING_SUM(SUM([Sales]))',
+            table_name='Fact',
+            compute_using=['Region'],
+            column_table_map={'Region': 'Fact', 'Sales': 'Fact'}
+        )
+        self.assertIn('TODO', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('CALCULATE', result)
+        self.assertNotIn('ALLSELECTED', result)
+        self.assertNotIn('__SortColumn__', result)
 
     def test_rank_dense_via_main(self):
         result = convert_tableau_formula_to_dax(

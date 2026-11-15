@@ -145,35 +145,14 @@ _SIMPLE_FUNCTION_MAP = [
     # Regex — REGEXP_MATCH, REGEXP_EXTRACT, REGEXP_EXTRACT_NTH, and REGEXP_REPLACE
     # are handled by dedicated converters called in Phase 3b-pre.
 
-    # Spatial functions — MAKEPOINT maps to lat/long column pair hint
-    (r'\bMAKEPOINT\s*\(', '/* MAKEPOINT → use Latitude/Longitude columns in map visual */ BLANK( /*'),
-    (r'\bMAKELINE\s*\(', '/* MAKELINE: use line-layer in map visual */ BLANK( /*'),
-    (r'\bDISTANCE\s*\(', '/* DISTANCE: compute via Haversine or external tool */ 0 + ( /*'),
-    (r'\bBUFFER\s*\(', '/* BUFFER: no DAX spatial equivalent */ BLANK( /*'),
-    (r'\bAREA\s*\(', '/* AREA: no DAX spatial equivalent */ 0 + ( /*'),
-    (r'\bINTERSECTION\s*\(', '/* INTERSECTION: no DAX spatial equivalent */ BLANK( /*'),
-    (r'\bHEXBINX\s*\(', '/* HEXBINX: no DAX equivalent */ 0 + ( /*'),
-    (r'\bHEXBINY\s*\(', '/* HEXBINY: no DAX equivalent */ 0 + ( /*'),
-
     # Table calculations — RUNNING_*/TOTAL handled by dedicated converters (_convert_running_functions, _convert_total_function)
     # RANK/RANK_UNIQUE/RANK_DENSE/RANK_MODIFIED/RANK_PERCENTILE handled by _convert_rank_functions
     # INDEX handled by dedicated converter (_convert_index)
-    (r'\bFIRST\s*\(\s*\)', '/* FIRST(): rows from first row — use ORDERBY column */ -(RANKX(ALLSELECTED(), [__SortColumn__], , ASC, DENSE) - 1)'),
-    (r'\bLAST\s*\(\s*\)', '/* LAST(): rows to last row — use ORDERBY column */ COUNTROWS(ALLSELECTED()) - RANKX(ALLSELECTED(), [__SortColumn__], , ASC, DENSE)'),
     # PREVIOUS_VALUE and LOOKUP handled by dedicated converters below
-    (r'\bSIZE\s*\(\s*\)', 'COUNTROWS(ALLSELECTED()) /* SIZE: partition row count */'),
 
     # WINDOW_* table calculations handled by _convert_window_functions (SUM/AVG/MAX/MIN/COUNT/MEDIAN/STDEV/VAR/PERCENTILE)
     # WINDOW_CORR/COVAR/COVARP also handled by dedicated converter in _convert_window_functions
 
-    # Script/Analytics Extensions (no DAX equivalent)
-    (r'\bSCRIPT_BOOL\s*\(', '/* SCRIPT_BOOL: analytics extension — manual conversion needed */ BLANK( /*'),
-    (r'\bSCRIPT_INT\s*\(', '/* SCRIPT_INT: analytics extension — manual conversion needed */ 0 + ( /*'),
-    (r'\bSCRIPT_REAL\s*\(', '/* SCRIPT_REAL: analytics extension — manual conversion needed */ 0 + ( /*'),
-    (r'\bSCRIPT_STR\s*\(', '/* SCRIPT_STR: analytics extension — manual conversion needed */ "" & ( /*'),
-
-    # COLLECT (spatial aggregate — no DAX equivalent)
-    (r'\bCOLLECT\s*\(', '/* COLLECT: spatial aggregate — no DAX equivalent */ BLANK( /*'),
 ]
 
 # Pre-compile all patterns for performance
@@ -494,9 +473,8 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_proper(dax)
     dax = _convert_reverse(dax)
     dax = _convert_split(dax)
-    dax = _convert_ltrim(dax)
-    dax = _convert_rtrim(dax)
     dax = _convert_index(dax)
+    dax = _convert_size(dax)
     dax = _convert_atan2(dax)
     dax = _convert_div(dax)
     dax = _convert_square(dax)
@@ -539,11 +517,16 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         is_calc_column=is_calc_column,
     )
     dax = _convert_datepart_direct_units(dax)
+    dax = _convert_unsupported_functions(dax)
+    masked_functions, restore_functions = _protect_source_tokens(dax)
     for compiled_pattern, replacement in _COMPILED_FUNCTION_MAP:
-        dax = compiled_pattern.sub(replacement, dax)
+        masked_functions = compiled_pattern.sub(replacement, masked_functions)
+    dax = restore_functions(masked_functions)
 
     # 3b-post. Fix functions needing additional arguments
     dax = _convert_left_right(dax)
+    dax = _convert_ltrim(dax)
+    dax = _convert_rtrim(dax, value_column_ref=regex_series_value_token)
     dax = _fix_ceiling_floor(dax)
 
     # 3c. Special functions requiring argument reordering
@@ -2963,27 +2946,42 @@ def _convert_proper(dax):
 
 
 def _convert_split(dax):
-    """SPLIT(string, delimiter, token_number) → PATHITEM(SUBSTITUTE(string, delimiter, "|"), token).
+    """SPLIT(string, delimiter, token_number) → guarded PATHITEM expression.
 
-    Also supports negative token index → count from end using PATHITEMREVERSE.
+    Negative token indexes count from the end using PATHITEMREVERSE.
     """
     def _xf(args, inner):
-        if len(args) >= 3:
+        if len(args) >= 2:
             s = args[0].strip()
             delim = args[1].strip()
-            token = args[2].strip()
-            # Negative index → reverse
+            token = args[2].strip() if len(args) >= 3 else '1'
+            reverse = False
             try:
                 idx = int(token)
                 if idx < 0:
-                    return f'PATHITEMREVERSE(SUBSTITUTE({s}, {delim}, "|"), {-idx})'
+                    token = str(-idx)
+                    reverse = True
             except (ValueError, TypeError):
                 pass
-            return f'PATHITEM(SUBSTITUTE({s}, {delim}, "|"), {token})'
-        elif len(args) == 2:
-            s = args[0].strip()
-            delim = args[1].strip()
-            return f'PATHITEM(SUBSTITUTE({s}, {delim}, "|"), 1)'
+
+            path_item = 'PATHITEMREVERSE' if reverse else 'PATHITEM'
+            direct_item = f'{path_item}({s}, {token})'
+            substituted_item = f'{path_item}(SUBSTITUTE({s}, {delim}, "|"), {token})'
+            is_string_literal = (
+                len(delim) >= 2
+                and delim[0] == delim[-1]
+                and delim[0] in ('"', "'")
+            )
+
+            if is_string_literal and delim[1:-1] == '|':
+                result = direct_item
+            else:
+                collision_guard = f'IF(CONTAINSSTRING({s}, "|"), BLANK(), {substituted_item})'
+                if is_string_literal:
+                    result = collision_guard
+                else:
+                    result = f'IF({delim} = "|", {direct_item}, {collision_guard})'
+            return f'IF(ISBLANK({s}), BLANK(), {result})'
         return f'/* SPLIT({inner}): insufficient arguments */ BLANK()'
     return _transform_func_call(dax, 'SPLIT', _xf)
 
@@ -2997,14 +2995,13 @@ def _convert_ltrim(dax):
     def _xf(args, inner):
         s = inner.strip()
         return (
-            f'MID({s}, LEN({s}) - LEN(TRIM({s})) - (LEN(TRIM({s})) - LEN(SUBSTITUTE(TRIM({s}), " ", ""))) + 1 + '
-            f'(LEN({s}) - LEN(SUBSTITUTE({s}, " ", "")) - (LEN(TRIM({s})) - LEN(SUBSTITUTE(TRIM({s}), " ", "")))), '
-            f'LEN({s}))'
+            f'IF(ISBLANK({s}), BLANK(), IF(LEN(TRIM({s})) = 0, "", '
+            f'MID({s}, FIND(LEFT(TRIM({s}), 1), {s}), LEN({s}))))'
         )
     return _transform_func_call(dax, 'LTRIM', _xf)
 
 
-def _convert_rtrim(dax):
+def _convert_rtrim(dax, value_column_ref='[Value]'):
     """RTRIM(string) → LEFT-based right-trim that removes trailing spaces only.
 
     DAX TRIM() removes both leading and trailing spaces.
@@ -3012,12 +3009,11 @@ def _convert_rtrim(dax):
     """
     def _xf(args, inner):
         s = inner.strip()
-        # Count leading spaces = total_spaces - trailing_spaces
-        # trailing_spaces = total_spaces - leading_spaces
-        # Simpler approach: get total length minus trailing space count
         return (
-            f'LEFT({s}, LEN({s}) - (LEN({s}) - LEN(TRIM({s}))) + '
-            f'(LEN(TRIM({s})) - LEN(SUBSTITUTE(TRIM({s}), " ", ""))))'
+            f'IF(ISBLANK({s}), BLANK(), IF(LEN(TRIM({s})) = 0, "", '
+            f'LEFT({s}, MAXX(FILTER(GENERATESERIES(1, LEN({s})), '
+            f'MID({s}, {value_column_ref}, 1) <> " "), '
+            f'{value_column_ref}))))'
         )
     return _transform_func_call(dax, 'RTRIM', _xf)
 
@@ -3036,6 +3032,17 @@ def _convert_index(dax):
         '1 /* INDEX fallback: constant for visual compatibility */',
         dax
     )
+
+
+def _convert_size(dax):
+    """SIZE() requires verified Tableau mark grain and partition context."""
+    masked, restore = _protect_source_tokens(dax)
+    pattern = re.compile(r'\bSIZE\s*\(\s*\)', re.IGNORECASE)
+    return restore(pattern.sub(
+        lambda _: _unsupported_conversion(
+            'SIZE requires verified Tableau mark grain and partition context'),
+        masked,
+    ))
 
 
 def _convert_reverse(dax):
@@ -3091,6 +3098,23 @@ _DATE_FORMAT_MAP = {
     'HH': 'HH', 'hh': 'HH', 'mm': 'NN', 'ss': 'SS',
     'EEEE': 'DDDD', 'EEE': 'DDD',
 }
+
+def _convert_unsupported_functions(dax):
+    """Replace unsupported Tableau calls with a valid diagnostic expression."""
+
+    def fallback(args, inner, restore):
+        return _unsupported_conversion(
+            'No DAX equivalent; manual conversion is required')
+
+    for function_name in (
+            'MAKEPOINT', 'MAKELINE', 'DISTANCE', 'BUFFER', 'AREA',
+            'INTERSECTION', 'HEXBINX', 'HEXBINY', 'SCRIPT_BOOL',
+            'SCRIPT_INT', 'SCRIPT_REAL', 'SCRIPT_STR', 'COLLECT',
+            'USERATTRIBUTE', 'USERATTRIBUTEINCLUDES', 'ISUSERNAME',
+            'FIRST', 'LAST'):
+        dax = _transform_date_func_call(dax, function_name, fallback)
+    return dax
+
 
 def _transform_date_func_call(dax, func_name, transformer_fn):
     """Transform calls, including nested calls, but never quoted tokens.
@@ -3239,9 +3263,9 @@ def _convert_datetrunc(dax, *, table_name=None, table_columns=None,
                         f'IF(ISBLANK({date}), BLANK(), '
                         f'DATE(YEAR({date}), MONTH({date}), DAY({date})))')
             return _unsupported_conversion(
-                'DATETRUNC day requires a proven local physical date column in calculated-column context')
+                'day truncation requires a proven local physical date column in calculated-column context')
         return _unsupported_conversion(
-            'DATETRUNC granularity is unsupported without an explicit truncation policy')
+            'requested truncation granularity is unsupported without an explicit policy')
 
     return _transform_date_func_call(dax, 'DATETRUNC', convert)
 
@@ -3289,12 +3313,12 @@ def _convert_datepart_direct_units(dax):
         if function is None:
             if part == 'weekday' and len(args) == 2:
                 return _unsupported_conversion(
-                    'DATEPART weekday numbering depends on unverified Tableau week-start semantics')
+                    'day-of-week numbering depends on unverified week-start semantics')
             if len(args) != 2:
                 return _unsupported_conversion(
                     'DATEPART requires exactly two arguments')
             return _unsupported_conversion(
-                'DATEPART part is unsupported without verified Tableau semantics')
+                'requested date part is unsupported without verified semantics')
         if len(args) != 2:
             return _unsupported_conversion(
                 'DATEPART direct unit requires exactly two arguments')
@@ -3567,6 +3591,10 @@ def _convert_regexp_match(dax, value_column_ref='[Value]'):
         if len(args) < 2:
             return f'CONTAINSSTRING({inner})'
         field = args[0].strip()
+
+        def _blank_guard(expression):
+            return f'IF(ISBLANK({field}), BLANK(), {expression})'
+
         raw_pat = args[1].strip()
         # Strip surrounding quotes
         if (raw_pat.startswith('"') and raw_pat.endswith('"')) or \
@@ -3581,14 +3609,16 @@ def _convert_regexp_match(dax, value_column_ref='[Value]'):
         # .+ / .* / ^.*$ / ^.+$ → always TRUE (matches any non-empty / any string)
         if pat in ('.+', '.*', '^.*$', '^.+$'):
             if pat in ('.+', '^.+$'):
-                return f'(LEN({field}) > 0)'
-            return 'TRUE()'
+                result = f'(LEN({field}) > 0)'
+            else:
+                result = 'TRUE()'
+            return f'IF(ISBLANK({field}), BLANK(), {result})'
 
         # ^literal$ → exact match
         if pat.startswith('^') and pat.endswith('$') and len(pat) > 2:
             body = pat[1:-1]
             if _is_simple_literal(body):
-                return f'({field} = "{body}")'
+                return _blank_guard(f'({field} = "{body}")')
 
         # ^literal  → LEFT match
         if pat.startswith('^'):
@@ -3632,7 +3662,7 @@ def _convert_regexp_match(dax, value_column_ref='[Value]'):
             digit_checks = ' || '.join(
                 f'CONTAINSSTRING({field}, "{d}")' for d in '0123456789'
             )
-            return f'({digit_checks})'
+            return _blank_guard(f'({digit_checks})')
 
         contains_class = re.fullmatch(r'\[([a-zA-Z0-9_-]+)\]', pat)
         if contains_class:
@@ -3659,14 +3689,16 @@ def _convert_regexp_match(dax, value_column_ref='[Value]'):
             branches = pat.split('|')
             parts = [f'CONTAINSSTRING({field}, "{b}")' for b in branches if b]
             if parts:
-                return '(' + ' || '.join(parts) + ')'
+                return _blank_guard('(' + ' || '.join(parts) + ')')
 
         # Simple literal (no metacharacters at all)
         if _is_simple_literal(pat):
-            return f'CONTAINSSTRING({field}, "{pat}")'
+            return _blank_guard(f'CONTAINSSTRING({field}, "{pat}")')
 
         # Fallback — complex regex, keep CONTAINSSTRING with comment
-        return f'/* REGEXP_MATCH: complex regex "{pat}" — verify manually */ CONTAINSSTRING({field}, "{pat}")'
+        return _blank_guard(
+            f'/* REGEXP_MATCH: complex regex "{pat}" — verify manually */ '
+            f'CONTAINSSTRING({field}, "{pat}")')
 
     return _transform_func_call(dax, 'REGEXP_MATCH', _xf)
 
@@ -4568,6 +4600,26 @@ def _convert_window_functions(dax, table_name, compute_using=None, column_table_
         - ``match_by``: list of column names for MATCHBY grain disambiguation
     """
     ctm = column_table_map or {}
+    percentile_pattern = _get_func_pattern('WINDOW_PERCENTILE')
+    match = percentile_pattern.search(dax)
+    while match:
+        start_pos = match.end()
+        depth = 1
+        i = start_pos
+        while i < len(dax) and depth > 0:
+            if dax[i] == '(':
+                depth += 1
+            elif dax[i] == ')':
+                depth -= 1
+            i += 1
+        if depth != 0:
+            break
+        replacement = _unsupported_conversion(
+            'percentile window grain is not verified'
+        )
+        dax = dax[:match.start()] + replacement + dax[i:]
+        match = percentile_pattern.search(dax)
+
     # Mapping of WINDOW functions that need an extra wrapping DAX aggregate function
     _WINDOW_WRAP = {
         'WINDOW_MEDIAN': 'MEDIAN',
@@ -4575,7 +4627,6 @@ def _convert_window_functions(dax, table_name, compute_using=None, column_table_
         'WINDOW_STDEVP': 'STDEV.P',
         'WINDOW_VAR': 'VAR.S',
         'WINDOW_VARP': 'VAR.P',
-        'WINDOW_PERCENTILE': 'PERCENTILE.INC',
     }
     for window_func in ['WINDOW_SUM', 'WINDOW_AVG', 'WINDOW_MAX', 'WINDOW_MIN', 'WINDOW_COUNT'] + list(_WINDOW_WRAP.keys()):
         pattern = _get_func_pattern(window_func)
@@ -4605,18 +4656,20 @@ def _convert_window_functions(dax, table_name, compute_using=None, column_table_
                 inner_expr = f'{wrap_fn}({inner_expr})'
             frame_start = None
             frame_end = None
-            if len(args) >= 3:
+            invalid_frame = len(args) not in (1, 3)
+            if len(args) == 3:
                 try:
                     frame_start = int(args[1].strip())
-                except (ValueError, TypeError):
-                    frame_start = None
-                try:
                     frame_end = int(args[2].strip())
                 except (ValueError, TypeError):
-                    frame_end = None
+                    invalid_frame = True
 
             # Build the DAX replacement
-            if frame_start is not None and frame_end is not None:
+            if invalid_frame:
+                replacement = _unsupported_conversion(
+                    'window frame bounds require either no bounds or exactly two integer offsets'
+                )
+            elif frame_start is not None and frame_end is not None:
                 # Frame boundaries specified — use DAX WINDOW function for precise range
                 order_clause, partition_clause, matchby_clause, filter_clause = \
                     _build_window_clauses(compute_using, table_name, ctm, partition_fields)
@@ -4664,7 +4717,7 @@ def _convert_window_functions(dax, table_name, compute_using=None, column_table_
             inner = dax[start_pos:i - 1]
             args = _split_args(inner)
 
-            if len(args) >= 2:
+            if len(args) == 2:
                 x_expr = args[0].strip()
                 y_expr = args[1].strip()
                 # Build the core correlation/covariance DAX
@@ -4680,9 +4733,11 @@ def _convert_window_functions(dax, table_name, compute_using=None, column_table_
                 else:
                     replacement = f"CALCULATE({core_dax}, ALL('{table_name}'))"
             else:
-                # Fallback — insufficient arguments
-                tag = window_stat_func.replace('_', '.')
-                replacement = f"/* {tag}({inner}): insufficient arguments */ 0"
+                replacement = _unsupported_conversion(
+                    'insufficient arguments or unsupported frame bounds for '
+                    'correlation/covariance; exactly two expressions are required '
+                    'without frame bounds'
+                )
 
             dax = dax[:match.start()] + replacement + dax[i:]
             match = pattern.search(dax)
@@ -4738,51 +4793,26 @@ def _convert_rank_functions(dax, table_name, compute_using=None, column_table_ma
 
 
 def _convert_running_functions(dax, table_name):
-    """Convert RUNNING_SUM/AVG/COUNT/MAX/MIN → CALCULATE with window spec.
-
-    These Tableau table calculations produce running aggregates.
-    In DAX, they map to cumulative patterns using CALCULATE + FILTER + ALLSELECTED.
-    """
-    running_map = {
-        'RUNNING_SUM': 'SUM',
-        'RUNNING_AVG': 'AVERAGE',
-        'RUNNING_COUNT': 'COUNT',
-        'RUNNING_MAX': 'MAX',
-        'RUNNING_MIN': 'MIN',
-    }
-    for tab_func, dax_agg in running_map.items():
-        pattern = _get_func_pattern(tab_func)
-        match = pattern.search(dax)
-        while match:
-            start_pos = match.end()
-            depth = 1
-            i = start_pos
-            while i < len(dax) and depth > 0:
-                if dax[i] == '(':
-                    depth += 1
-                elif dax[i] == ')':
-                    depth -= 1
-                i += 1
-            inner = dax[start_pos:i - 1].strip()
-            unquoted = _RE_NULL_PROTECTED_TOKEN.sub('', inner)
-            if re.search(r'\bDISTINCTCOUNTNOBLANK\s*\(', unquoted, re.IGNORECASE):
+    """Diagnose running table calculations when order and partition are unknown."""
+    for tab_func in (
+            'RUNNING_SUM', 'RUNNING_AVG', 'RUNNING_COUNT',
+            'RUNNING_MAX', 'RUNNING_MIN'):
+        def convert(args, inner, restore):
+            if re.search(
+                    r'\b(?:COUNTD|DISTINCTCOUNTNOBLANK)\s*\(',
+                    inner, re.IGNORECASE):
                 logger.warning(
                     "%s of COUNTD requires Tableau mark ordering and partitioning; "
                     "the calculation was not converted", tab_func,
                 )
-                replacement = (
+                return (
                     f"/* TODO: {tab_func} of COUNTD requires Tableau mark ordering "
                     "plus partitioning */ BLANK()"
                 )
-            else:
-                # No Tableau function name is emitted: a leftover RUNNING_* token
-                # would make conversion validation report a failed conversion.
-                replacement = (
-                    f"CALCULATE({inner}, "
-                    f"FILTER(ALLSELECTED('{table_name}'), TRUE()))"
-                )
-            dax = dax[:match.start()] + replacement + dax[i:]
-            match = pattern.search(dax)
+            return _unsupported_conversion(
+                'running table calculation requires verified ordering and partition context')
+
+        dax = _transform_date_func_call(dax, tab_func, convert)
     return dax
 
 
@@ -5702,7 +5732,12 @@ plt.show()'''
 # ═══════════════════════════════════════════════════════════════════
 
 def convert_window_percentile(formula, table_name):
-    """Convert Tableau WINDOW_PERCENTILE to DAX PERCENTILEX.INC.
+    """Legacy standalone approximation of Tableau WINDOW_PERCENTILE.
+
+    This helper is not invoked by the main formula converter. The active
+    conversion path fails closed because mark grain, percentile, and frame
+    semantics are unverified. This approximation is not evidence of active-path
+    support or runtime parity.
 
     WINDOW_PERCENTILE(expr, percentile) →
         PERCENTILEX.INC(ALL('table'), expr, percentile)

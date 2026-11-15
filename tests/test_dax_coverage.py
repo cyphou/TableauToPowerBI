@@ -426,10 +426,33 @@ class TestTableCalcAdvanced(unittest.TestCase):
         self.assertIn("ORDERBY", result)
         self.assertIn("Region", result)
 
-    def test_size_to_countrows(self):
+    def test_size_without_verified_grain_is_diagnostic(self):
         result = convert_tableau_formula_to_dax("SIZE()")
-        self.assertIn("COUNTROWS", result)
-        self.assertNotIn("CALCULATE", result)  # Simplified: COUNTROWS(ALLSELECTED()) only
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("COUNTROWS", result)
+        self.assertNotIn("ALLSELECTED", result)
+
+    def test_size_without_view_grain_is_diagnostic(self):
+        result = convert_tableau_formula_to_dax("SIZE()")
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("COUNTROWS", result)
+
+    def test_size_with_compute_using_without_mark_grain_is_diagnostic(self):
+        result = convert_tableau_formula_to_dax(
+            "SIZE()",
+            table_name="Orders",
+            compute_using=["Region"],
+            column_table_map={"Region": "Orders"},
+        )
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("COUNTROWS", result)
+
+    def test_size_text_literal_is_unchanged(self):
+        result = convert_tableau_formula_to_dax('"SIZE()"')
+        self.assertEqual(result, '"SIZE()"')
 
     def test_index_to_rankx(self):
         result = convert_tableau_formula_to_dax("INDEX()")
@@ -437,15 +460,19 @@ class TestTableCalcAdvanced(unittest.TestCase):
 
     def test_first_to_rankx(self):
         result = convert_tableau_formula_to_dax("FIRST()")
-        self.assertIn("RANKX", result)
-        self.assertIn("FIRST()", result)  # In comment
-        self.assertIn("ALLSELECTED", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("RANKX", result)
+        self.assertNotIn("COUNTROWS", result)
+        self.assertNotIn("__SortColumn__", result)
 
     def test_last_to_rankx(self):
         result = convert_tableau_formula_to_dax("LAST()")
-        self.assertIn("RANKX", result)
-        self.assertIn("LAST()", result)  # In comment
-        self.assertIn("COUNTROWS", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("RANKX", result)
+        self.assertNotIn("COUNTROWS", result)
+        self.assertNotIn("__SortColumn__", result)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -547,9 +574,18 @@ class TestWindowFunctions(unittest.TestCase):
 
     def test_window_percentile(self):
         result = convert_tableau_formula_to_dax(
-            "WINDOW_PERCENTILE(SUM([Sales]))", table_name="Orders")
-        self.assertIn("CALCULATE", result)
-        self.assertIn("PERCENTILE", result)
+            "WINDOW_PERCENTILE(SUM([Sales]), 0.75)", table_name="Orders")
+        self.assertIn("TODO", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("PERCENTILE.INC(", result)
+
+    def test_window_percentile_with_frame_bounds_fails_closed(self):
+        result = convert_tableau_formula_to_dax(
+            "WINDOW_PERCENTILE(SUM([Sales]), 0.75, -2, 0)",
+            table_name="Orders")
+        self.assertIn("TODO", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("PERCENTILE.INC(", result)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -610,31 +646,41 @@ class TestRunningFunctions(unittest.TestCase):
     def test_running_sum(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_SUM(SUM([Sales]))", table_name="Orders")
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_running_avg(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_AVG(AVG([Sales]))", table_name="Orders")
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_running_count(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_COUNT(COUNT([ID]))", table_name="Orders")
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_running_max(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_MAX(MAX([Sales]))", table_name="Orders")
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_running_min(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_MIN(MIN([Sales]))", table_name="Orders")
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_comments_do_not_trigger_conversion_validation(self):
         result = convert_tableau_formula_to_dax(
-            "// Opportunity Owner's [Sales Value]\nRUNNING_SUM(SUM([Sales]))",
+            "// Opportunity Owner's [Sales Value]: RUNNING_SUM([Sales])\nSUM([Sales])",
             table_name="Orders", validate_output=True, fallback_on_invalid=True)
         self.assertNotIn("TODO: DAX conversion validation failed", result)
         self.assertNotIn("RUNNING_SUM", result)
@@ -908,7 +954,12 @@ class TestStringConcatenation(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestSpecialNoEquivalent(unittest.TestCase):
-    """Test functions with no direct DAX equivalent — should have comments."""
+    """Test functions with no direct DAX equivalent."""
+
+    def assert_generic_fallback(self, result, source_function):
+        self.assertRegex(result, r"(?i)\bTODO\b|manual conversion")
+        self.assertIn("BLANK()", result)
+        self.assertNotIn(source_function, result)
 
     def test_regexp_match(self):
         result = convert_tableau_formula_to_dax('REGEXP_MATCH([Name], "^A")')
@@ -931,16 +982,15 @@ class TestSpecialNoEquivalent(unittest.TestCase):
 
     def test_script_bool(self):
         result = convert_tableau_formula_to_dax('SCRIPT_BOOL("x > 0", [Value])')
-        self.assertIn("SCRIPT_BOOL", result)  # In comment
-        self.assertIn("BLANK(", result)
+        self.assert_generic_fallback(result, "SCRIPT_BOOL")
 
     def test_script_int(self):
         result = convert_tableau_formula_to_dax('SCRIPT_INT("x + 1", [Value])')
-        self.assertIn("SCRIPT_INT", result)  # In comment
+        self.assert_generic_fallback(result, "SCRIPT_INT")
 
     def test_script_real(self):
         result = convert_tableau_formula_to_dax('SCRIPT_REAL("x * 2", [Value])')
-        self.assertIn("SCRIPT_REAL", result)  # In comment
+        self.assert_generic_fallback(result, "SCRIPT_REAL")
 
     def test_script_str(self):
         result = convert_tableau_formula_to_dax('SCRIPT_STR("str(x)", [Value])')
@@ -948,8 +998,7 @@ class TestSpecialNoEquivalent(unittest.TestCase):
 
     def test_makepoint(self):
         result = convert_tableau_formula_to_dax("MAKEPOINT([Lat], [Lon])")
-        self.assertIn("MAKEPOINT", result)  # In comment
-        self.assertIn("BLANK(", result)
+        self.assert_generic_fallback(result, "MAKEPOINT")
 
     def test_makeline(self):
         result = convert_tableau_formula_to_dax("MAKELINE([P1], [P2])")
@@ -957,7 +1006,7 @@ class TestSpecialNoEquivalent(unittest.TestCase):
 
     def test_distance(self):
         result = convert_tableau_formula_to_dax("DISTANCE([P1], [P2], 'miles')")
-        self.assertIn("Haversine", result)
+        self.assert_generic_fallback(result, "DISTANCE")
 
     def test_collect(self):
         result = convert_tableau_formula_to_dax("COLLECT([Geometry])")
@@ -965,11 +1014,11 @@ class TestSpecialNoEquivalent(unittest.TestCase):
 
     def test_hexbinx(self):
         result = convert_tableau_formula_to_dax("HEXBINX([X])")
-        self.assertIn("HEXBINX", result)  # In comment
+        self.assert_generic_fallback(result, "HEXBINX")
 
     def test_hexbiny(self):
         result = convert_tableau_formula_to_dax("HEXBINY([Y])")
-        self.assertIn("HEXBINY", result)  # In comment
+        self.assert_generic_fallback(result, "HEXBINY")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -985,8 +1034,11 @@ class TestMakeDateFunctions(unittest.TestCase):
         self.assertNotIn("MAKEDATE", result)
 
     def test_makedatetime(self):
-        result = convert_tableau_formula_to_dax("MAKEDATETIME(2024, 3, 15, 10, 30, 0)")
+        result = convert_tableau_formula_to_dax(
+            "MAKEDATETIME(MAKEDATE(2024, 3, 15), MAKETIME(10, 30, 0))"
+        )
         self.assertIn("DATE(", result)
+        self.assertIn("TIME(", result)
         self.assertNotIn("MAKEDATETIME", result)
 
     def test_maketime(self):
@@ -1498,19 +1550,23 @@ class TestLODMultiDimension(unittest.TestCase):
 
 
 class TestFirstLastImproved(unittest.TestCase):
-    """Sprint 23.5 — FIRST()/LAST() → RANKX-based offset."""
+    """FIRST()/LAST() fail closed without proven order/partition context."""
 
     def test_first_contains_rankx(self):
         result = convert_tableau_formula_to_dax("FIRST()")
-        self.assertIn('RANKX', result)
-        self.assertIn('ALLSELECTED', result)
-        self.assertIn('FIRST()', result)  # In comment
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('RANKX', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('__SortColumn__', result)
 
     def test_last_contains_countrows(self):
         result = convert_tableau_formula_to_dax("LAST()")
-        self.assertIn('COUNTROWS', result)
-        self.assertIn('ALLSELECTED', result)
-        self.assertIn('RANKX', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('RANKX', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('__SortColumn__', result)
 
     def test_first_in_if_expression(self):
         """FIRST() inside a measure needs explicit addressing context."""
@@ -1523,9 +1579,13 @@ class TestFirstLastImproved(unittest.TestCase):
         self.assertIn('BLANK()', result)
 
     def test_last_in_arithmetic(self):
-        """LAST() + 1 should maintain structure."""
+        """The unsupported LAST() diagnostic should not hide surrounding math."""
         result = convert_tableau_formula_to_dax("LAST() + 1")
-        self.assertIn('COUNTROWS', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('RANKX', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('__SortColumn__', result)
         self.assertIn('+ 1', result)
 
 

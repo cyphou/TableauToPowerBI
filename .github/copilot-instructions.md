@@ -271,7 +271,7 @@ calculations remain available; unknown ownership is not assigned by first match.
 | LOD | {FIXED dims : AGG} | Exact DAX with verified scope; otherwise a resolved SUM/AVG/MIN/MAX shelf can emit an annotated iterator over physical FIXED keys; unresolved cases retain TODO/BLANK |
 | LOD | {INCLUDE dims : AGG} | Annotated iterator only with explicit SUM/AVG/MIN/MAX shelf evidence and resolved same-table physical numeric keys/values; otherwise diagnostic TODO/BLANK |
 | LOD | {EXCLUDE dims : AGG} | Annotated CALCULATE(..., REMOVEFILTERS(...)) only for supported same-table physical numeric aggregates; cross-table keys and outer aggregates remain diagnostic |
-| Table Calc | RUNNING_SUM/AVG/COUNT | CALCULATE(SUM/AVERAGE/COUNT) |
+| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN | Diagnostic TODO/BLANK without a resolved ordering column |
 | Table Calc | RANK, RANK_UNIQUE, RANK_DENSE | RANKX(ALL()) |
 | Table Calc | WINDOW_SUM/AVG/MAX/MIN | CALCULATE() |
 | Syntax | ==, or/and, ELSEIF, + (strings), multi-line IF | =, \|\|/&&, ,, &, condensed IF |
@@ -382,7 +382,7 @@ not a guarantee of exact rendered parity or tenant custom-visual availability.
 - **Tableau Pulse → PBI Goals**: `--goals` flag converts Tableau Pulse metric definitions to Power BI Goals/Scorecard JSON artifacts
 - **Dynamic parameters**: Tableau 2024.3+ database-query-driven parameters → M partition with `Value.NativeQuery()` for dynamic parameter refresh
 - **Source selection / Hyper data loading**: Prefer a complete explicit original database binding over Hyper in the same datasource, before any Hyper data read/export; preserve native lineage and fail explicitly on incomplete/ambiguous database bindings. File-backed extracts and unresolved published references do not qualify; shared remaining Hyper consumers still require export. Retained snapshots require a full reader, CSV (uncompressed Hyper <= 10 MiB) or native Parquet (> 10 MiB), and exact physical-identity Import bindings. Reject capped/sample-only exports and unresolved bindings; never switch sources to hide an export failure. Metadata/legacy `#table()` samples are diagnostic, not full-data imports. Database generation does not contact the source or establish snapshot parity; static evidence is separate from native refresh and saved-state validation.
-- **SCRIPT_* → Python/R visuals**: `SCRIPT_BOOL/INT/REAL/STR` Tableau functions → PBI `scriptVisual` containers (Python or R) with script text and input columns
+- **SCRIPT_* fallback and visuals**: the DAX converter emits diagnostic `TODO`/`BLANK()` for `SCRIPT_BOOL/INT/REAL/STR`. PBIR may separately create a Python/R `scriptVisual` when worksheet-level source detection finds a script calculation; this is conditional and does not prove runtime availability or parity.
 - **diagramLayout.json**: empty layout file — Power BI Desktop auto-fills on first open
 - **Parameters**: Tableau parameters → PBI What-If parameter tables:
   - Range parameters (integer/real) → `GENERATESERIES(min, max, step)` table + `SELECTEDVALUE` measure

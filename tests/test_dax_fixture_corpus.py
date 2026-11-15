@@ -149,8 +149,8 @@ CORPUS = [
         ['TODO: DAX conversion validation failed', 'BLANK()'], {}),
 
     # ── Table calculations ───────────────────────────────────────────
-    ('RUNNING_SUM(SUM([Sales]))', ['CALCULATE', 'SUM'], {}),
-    ('RUNNING_AVG(AVG([Sales]))', ['CALCULATE', 'AVERAGE'], {}),
+    ('RUNNING_SUM(SUM([Sales]))', ['TODO: DAX conversion validation failed', 'BLANK()'], {}),
+    ('RUNNING_AVG(AVG([Sales]))', ['TODO: DAX conversion validation failed', 'BLANK()'], {}),
     ('WINDOW_SUM(SUM([Sales]))', ['CALCULATE', 'SUM'], {}),
     ('RANK(SUM([Sales]))', ['RANKX'], {}),
 

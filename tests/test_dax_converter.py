@@ -19,9 +19,75 @@ from dax_converter import (
     _convert_measure_ref_ratio,
     _convert_nullif,
     _reverse_tableau_bracket_escape,
+    compile_verified_fixed_dimension,
     convert_tableau_formula_to_dax,
     map_tableau_to_powerbi_type,
 )
+
+
+class TestCompileVerifiedFixedDimension(unittest.TestCase):
+    """Synthetic contract assertions, not proof for any real workbook."""
+
+    def verified_scope(self):
+        return {
+            "table": "Facts",
+            "target_dimension": "Region Ratio",
+            "fixed_dimensions": ["Region"],
+            "numerator_column": "Numerator",
+            "denominator_column": "Denominator",
+            "physical_fields": ["Region", "Numerator", "Denominator"],
+            "numeric_columns": ["Numerator", "Denominator"],
+            "storage_mode": "import",
+            "execution_scope": "refresh_calculated_column_only",
+            "source_filters": [],
+            "target_refresh_filters": [],
+            "filter_policy": "source_fixed_scope_equals_target_refresh_per_key",
+            "source_row_bag_verified": True,
+            "physical_fields_verified": True,
+            "fixed_key_and_nulls_verified": True,
+            "numeric_and_null_equivalence_verified": True,
+            "filter_equivalence_verified": True,
+            "all_security_and_contexts_verified": True,
+            "engine_support_verified": True,
+        }
+
+    def test_missing_or_none_verified_scope_is_unsupported(self):
+        for scope in (None, {}):
+            with self.subTest(scope=scope):
+                result = compile_verified_fixed_dimension(
+                    "{FIXED [Region] : SUM([Numerator]) / SUM([Denominator])}",
+                    table_name="Facts",
+                    table_columns=["Region", "Numerator", "Denominator"],
+                    verified_scope=scope,
+                )
+                self.assertEqual(result["status"], "unsupported")
+
+    def test_complete_synthetic_scope_compiles_fixed_ratio(self):
+        result = compile_verified_fixed_dimension(
+            "{FIXED [Region] : SUM([Numerator]) / SUM([Denominator])}",
+            table_name="Facts",
+            table_columns=["Region", "Numerator", "Denominator"],
+            verified_scope=self.verified_scope(),
+        )
+
+        self.assertEqual(result["status"], "supported")
+        self.assertEqual(
+            result["execution_scope"], "refresh_calculated_column_only")
+        self.assertIn("DIVIDE(", result["expression"])
+        self.assertIn("ALLEXCEPT(", result["expression"])
+
+    def test_false_required_evidence_is_unsupported(self):
+        scope = self.verified_scope()
+        scope["engine_support_verified"] = False
+
+        result = compile_verified_fixed_dimension(
+            "{FIXED [Region] : SUM([Numerator]) / SUM([Denominator])}",
+            table_name="Facts",
+            table_columns=["Region", "Numerator", "Denominator"],
+            verified_scope=scope,
+        )
+
+        self.assertEqual(result["status"], "unsupported")
 
 # ═══════════════════════════════════════════════════════════════════════
 # Type Mapping
@@ -741,7 +807,8 @@ class TestCountdNullSemantics(unittest.TestCase):
             'RUNNING_SUM(IF [Caption] = "COUNTD(example)" THEN 1 ELSE 0 END)',
             table_name="Orders",
         )
-        self.assertIn('"COUNTD(example)"', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
         self.assertNotIn('mark ordering plus partitioning', result)
 
 
@@ -877,6 +944,24 @@ class TestSimpleFunctionConversions(unittest.TestCase):
     def test_username_to_userprincipalname(self):
         result = convert_tableau_formula_to_dax("USERNAME()")
         self.assertIn("USERPRINCIPALNAME", result)
+
+    def test_unsupported_user_functions_fall_back_without_executable_leaks(self):
+        for function, formula in (
+            ("USERATTRIBUTE", "USERATTRIBUTE('Region')"),
+            ("USERATTRIBUTEINCLUDES", "USERATTRIBUTEINCLUDES('Region','North')"),
+            ("ISUSERNAME", "ISUSERNAME('person')"),
+        ):
+            with self.subTest(function=function):
+                result = convert_tableau_formula_to_dax(
+                    formula, validate_output=True, fallback_on_invalid=True)
+                self.assertIn("TODO: DAX conversion validation failed", result)
+                self.assertTrue(result.rstrip().endswith("BLANK()"))
+                executable = result.rsplit("*/", 1)[-1]
+                self.assertNotRegex(executable, rf"(?i)\b{function}\s*\(")
+
+    def test_userattribute_call_shaped_string_literal_is_unchanged(self):
+        formula = '"USERATTRIBUTE([Region])"'
+        self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
 
     def test_fullname_to_userprincipalname(self):
         result = convert_tableau_formula_to_dax("FULLNAME()")
@@ -1185,14 +1270,18 @@ class TestTableCalcConversions(unittest.TestCase):
             "RUNNING_SUM(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_running_avg(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_AVG(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_rank(self):
         result = convert_tableau_formula_to_dax(
@@ -1533,6 +1622,20 @@ class TestTextFunctions(unittest.TestCase):
         result = convert_tableau_formula_to_dax("LTRIM([Name])")
         self.assertIn("TRIM", result)
 
+    def test_ltrim_leading_spaces_uses_first_non_space_position(self):
+        result = convert_tableau_formula_to_dax('LTRIM("  abc  ")')
+        self.assertIn(
+            'MID("  abc  ", FIND(LEFT(TRIM("  abc  "), 1), "  abc  "), LEN("  abc  "))',
+            result,
+        )
+
+    def test_ltrim_without_leading_spaces_starts_at_first_character(self):
+        result = convert_tableau_formula_to_dax('LTRIM("abc  ")')
+        self.assertIn(
+            'MID("abc  ", FIND(LEFT(TRIM("abc  "), 1), "abc  "), LEN("abc  "))',
+            result,
+        )
+
     def test_rtrim(self):
         result = convert_tableau_formula_to_dax("RTRIM([Name])")
         self.assertIn("TRIM", result)
@@ -1722,6 +1825,13 @@ class TestDateFunctionsExpanded(unittest.TestCase):
     def test_datepart_text_inside_quoted_string_is_unchanged(self):
         formula = '"DATEPART(quarter, example)"'
         self.assertEqual(convert_tableau_formula_to_dax(formula), formula)
+
+    def test_avg_text_inside_quoted_string_is_unchanged(self):
+        result = convert_tableau_formula_to_dax(
+            '"AVG([x])" + AVG([Value])')
+        self.assertIn('"AVG([x])"', result)
+        self.assertIn("AVERAGE(", result)
+        self.assertIn("'Table'[Value]", result)
 
     def test_datepart_year_text_inside_quoted_string_is_unchanged(self):
         formula = '"DATEPART(year, example)"'
@@ -1978,6 +2088,28 @@ class TestSpecialConverterFunctions(unittest.TestCase):
         result = convert_tableau_formula_to_dax("SPLIT([Name], ' ', 1)")
         self.assertIsInstance(result, str)
 
+    def test_split_guards_reserved_pipe_for_other_delimiters(self):
+        result = convert_tableau_formula_to_dax('SPLIT([Data], "-", 2)')
+
+        self.assertRegex(
+            result,
+            r'IF\(CONTAINSSTRING\(\'Table\'\[Data\], "\|"\),\s*BLANK\(\),\s*PATHITEM\(SUBSTITUTE\(\'Table\'\[Data\], "-", "\|"\), 2\)\)',
+        )
+
+    def test_split_uses_source_when_delimiter_is_pipe(self):
+        result = convert_tableau_formula_to_dax('SPLIT([Data], "|", 2)')
+
+        self.assertIn("PATHITEM('Table'[Data], 2)", result)
+        self.assertNotIn("CONTAINSSTRING", result)
+
+    def test_split_negative_index_guards_reserved_pipe(self):
+        result = convert_tableau_formula_to_dax('SPLIT([Data], "-", -2)')
+
+        self.assertRegex(
+            result,
+            r'IF\(CONTAINSSTRING\(\'Table\'\[Data\], "\|"\),\s*BLANK\(\),\s*PATHITEMREVERSE\(SUBSTITUTE\(\'Table\'\[Data\], "-", "\|"\), 2\)\)',
+        )
+
     def test_find(self):
         result = convert_tableau_formula_to_dax("FIND([Name], 'test')")
         self.assertIn("FIND", result)
@@ -2013,21 +2145,27 @@ class TestTableCalcExpanded(unittest.TestCase):
             "RUNNING_COUNT(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_running_max(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_MAX(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_running_min(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_MIN(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("CALCULATE", result)
+        self.assertIn("TODO: DAX conversion validation failed", result)
+        self.assertIn("BLANK()", result)
+        self.assertNotIn("CALCULATE", result)
 
     def test_rank_dense(self):
         result = convert_tableau_formula_to_dax(
@@ -2164,6 +2302,83 @@ class TestScriptFunctions(unittest.TestCase):
     def test_script_str(self):
         result = convert_tableau_formula_to_dax("SCRIPT_STR('return hello', [Name])")
         self.assertIsInstance(result, str)
+
+
+class TestNoEquivalentFunctionFallbacks(unittest.TestCase):
+    """Regression tests for functions with no direct DAX equivalent."""
+
+    def assert_no_equivalent_fallback(self, formula, function_name):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        result = convert_tableau_formula_to_dax(formula)
+
+        self.assertRegex(result, r"(?i)\bTODO\b|manual conversion")
+        executable_text = re.sub(
+            r"/\*.*?(?:\*/|$)|--[^\r\n]*", " ", result, flags=re.DOTALL)
+        self.assertNotRegex(executable_text, rf"(?i)\b{function_name}\b")
+        self.assertEqual(
+            validate_dax_expression(result),
+            ["unsupported DAX conversion placeholder"],
+        )
+
+    def test_makepoint_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "MAKEPOINT([Latitude], [Longitude])", "MAKEPOINT")
+
+    def test_makeline_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "MAKELINE([StartPoint], [EndPoint])", "MAKELINE")
+
+    def test_distance_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "DISTANCE([PointA], [PointB], 'km')", "DISTANCE")
+
+    def test_buffer_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "BUFFER([Point], 100, 'km')", "BUFFER")
+
+    def test_area_fallback(self):
+        self.assert_no_equivalent_fallback("AREA([Polygon])", "AREA")
+
+    def test_intersection_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "INTERSECTION([ShapeA], [ShapeB])", "INTERSECTION")
+
+    def test_hexbinx_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "HEXBINX([Longitude], [Latitude])", "HEXBINX")
+
+    def test_hexbiny_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "HEXBINY([Longitude], [Latitude])", "HEXBINY")
+
+    def test_script_bool_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "SCRIPT_BOOL('return True', [Sales])", "SCRIPT_BOOL")
+
+    def test_script_int_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "SCRIPT_INT('return 1', [Sales])", "SCRIPT_INT")
+
+    def test_script_real_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "SCRIPT_REAL('return 1.0', [Sales])", "SCRIPT_REAL")
+
+    def test_script_str_fallback(self):
+        self.assert_no_equivalent_fallback(
+            "SCRIPT_STR('return value', [Name])", "SCRIPT_STR")
+
+    def test_collect_fallback(self):
+        self.assert_no_equivalent_fallback("COLLECT([Geometry])", "COLLECT")
+
+    def test_supported_sum_is_unchanged(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        result = convert_tableau_formula_to_dax("SUM([Sales])")
+
+        self.assertEqual(result, "SUM('Table'[Sales])")
+        self.assertNotRegex(result, r"(?i)\bTODO\b|manual conversion")
+        self.assertEqual(validate_dax_expression(result), [])
 
 
 class TestSecurityFunctionsExpanded(unittest.TestCase):

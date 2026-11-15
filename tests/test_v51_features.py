@@ -41,7 +41,9 @@ class TestSplitConversion(unittest.TestCase):
         result = convert_tableau_formula_to_dax('SPLIT([Name], " ", 2)')
         self.assertIn('PATHITEM', result)
         self.assertIn('SUBSTITUTE', result)
-        self.assertNotIn('BLANK()', result)
+        self.assertIn('ISBLANK', result)
+        self.assertIn('CONTAINSSTRING', result)
+        self.assertIn('"|"', result)
 
     def test_split_two_args(self):
         result = convert_tableau_formula_to_dax('SPLIT([Email], "@")')
@@ -106,17 +108,22 @@ class TestIndexConversion(unittest.TestCase):
 
 
 class TestSizeConversion(unittest.TestCase):
-    """SIZE() → COUNTROWS(ALLSELECTED())."""
+    """SIZE() without verified mark grain remains diagnostic."""
 
     def test_size_basic(self):
         result = convert_tableau_formula_to_dax('SIZE()')
-        self.assertIn('COUNTROWS', result)
-        self.assertIn('ALLSELECTED', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('ALLSELECTED', result)
 
-    def test_size_not_bare_countrows(self):
-        """Should use COUNTROWS(ALLSELECTED()), not bare COUNTROWS()."""
+    def test_size_fails_closed_without_mark_grain(self):
+        """SIZE() must not infer a view row count without verified mark grain."""
         result = convert_tableau_formula_to_dax('SIZE()')
-        self.assertIn('COUNTROWS(ALLSELECTED())', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('ALLSELECTED', result)
 
 
 class TestWindowCorrCovar(unittest.TestCase):

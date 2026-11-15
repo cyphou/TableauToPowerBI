@@ -1247,9 +1247,11 @@ never by itself proves a capability gap, each was tested against the main
 converter, which handles all of them through its own pattern table:
 `REGEXP_REPLACE` → `SUBSTITUTE`, `REGEXP_MATCH` → `LEFT(...) = "A"`,
 `REGEXP_EXTRACT` → `MID(...)`, nested LOD → nested `CALCULATE`/`ALLEXCEPT`,
-`WINDOW_PERCENTILE` → `CALCULATE(PERCENTILE.INC, ALL())`, `LOOKUP` →
-`OFFSET(... ORDERBY ...)`, `ISMEMBEROF` → `TRUE()` plus an RLS note. So these
-are **superseded implementations**, not capability.
+`LOOKUP` → `OFFSET(... ORDERBY ...)`, `ISMEMBEROF` → `TRUE()` plus an RLS note.
+The legacy `convert_window_percentile` helper is not called by the main path;
+active `WINDOW_PERCENTILE` calls retain a diagnostic because percentile mark
+grain and frame semantics are not verified. These remaining wrappers are
+**superseded implementations**, not proof of active-path capability.
 
 Open decision for `@dax`, deliberately not taken here: retire them, or wire
 them where they are better than the pattern-table result. Both need a

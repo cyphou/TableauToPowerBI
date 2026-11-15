@@ -4,6 +4,31 @@
 
 ## Unreleased
 
+- Preserve quoted strings and identifiers during simple Tableau function-name
+  mappings; keep nulls through optimized `REGEXP_MATCH` wildcard patterns; and
+  correct generated `LTRIM`/`RTRIM` expressions to preserve the opposite edge
+  and repeated internal ordinary spaces. Focused tests cover emitted DAX shape,
+  not Power BI runtime parity.
+- Replace malformed spatial, analytics-extension, and collection DAX prefixes
+  with balanced diagnostic `TODO`/`BLANK()` fallbacks. Script visuals remain a
+  separate conditional PBIR-generation path; spatial formula fallbacks do not
+  create visuals or imply runtime/value parity.
+- Diagnose `USERATTRIBUTE`, `USERATTRIBUTEINCLUDES`, and `ISUSERNAME` calls
+  instead of emitting unsupported Tableau function names or guessing an Entra
+  identity/RLS mapping.
+- Diagnose `FIRST()`/`LAST()` table calculations when no resolved ordering and
+  partition column is available, instead of emitting a rank expression against
+  a fabricated sort-column reference.
+- Diagnose `RUNNING_SUM/AVG/COUNT/MAX/MIN` when the active converter lacks a
+  resolved ordering column, rather than emitting an all-selected aggregate as
+  a running result.
+- Diagnose `SIZE()` when verified mark grain and partition context are absent;
+  retain the explicitly lossy constant `INDEX()` compatibility fallback rather
+  than presenting it as a rank or row-number conversion.
+- Fail closed for active `WINDOW_PERCENTILE` calls and bounded
+  `WINDOW_CORR`/`WINDOW_COVAR`/`WINDOW_COVARP` calls when mark grain or frame
+  semantics are unverified. Keep the unbounded covariance approximations and
+  document that the standalone percentile helper is not used by the main path.
 - Distinguish bounded scalar binary MIN/MAX from unary aggregates when local
   physical numeric bindings are proven; preserve nulls and consuming column
   aggregations. Scope numeric constants and their transitive aliases by source

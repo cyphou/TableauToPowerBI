@@ -128,12 +128,26 @@ class TestDaxValidatorPhase3(unittest.TestCase):
 
     def test_multiple_tableau_leak_tokens(self):
         for tok in ['DATETRUNC', 'DATEPART', 'IFNULL', 'ISNULL', 'COUNTD',
-                     'WINDOW_SUM', 'RUNNING_SUM', 'RANK_UNIQUE', 'PREVIOUS_VALUE']:
+                     'WINDOW_SUM', 'RUNNING_SUM', 'RANK_UNIQUE', 'PREVIOUS_VALUE',
+                     'FIRST', 'LAST']:
             issues = validate_dax_expression(f"{tok}([X])")
             self.assertTrue(
                 any('Tableau function' in i for i in issues),
                 f"Expected Tableau leak detection for {tok}",
             )
+
+    def test_user_attribute_functions_are_tableau_leaks(self):
+        for expression in (
+            "USERATTRIBUTE('Region')",
+            "USERATTRIBUTEINCLUDES('Region', 'North')",
+            "ISUSERNAME('person')",
+        ):
+            with self.subTest(expression=expression):
+                issues = validate_dax_expression(expression)
+                self.assertTrue(
+                    any('Tableau function' in issue for issue in issues),
+                    f"Expected Tableau leak detection for {expression}",
+                )
 
 
 class TestStrictEqualityValidatorRegression(unittest.TestCase):

@@ -9,7 +9,7 @@ Covers:
   - ISDATE (regression)
   - SPACE / CHAR (regression)
   - ATTR context-aware (measure vs column)
-  - SIZE → COUNTROWS
+    - SIZE → diagnostic BLANK without verified mark grain
   - Nested aggregation AGG(IF(...)) → AGGX
   - DATEPARSE
   - String concat + → &
@@ -84,8 +84,10 @@ class TestMakeDateTimeFunctions(unittest.TestCase):
         self.assertIn('TIME(', result)
 
     def test_makedatetime(self):
-        result = _dax('MAKEDATETIME(2024, 1, 15)')
+        result = _dax('MAKEDATETIME(MAKEDATE(2024, 1, 15), MAKETIME(10, 30, 0))')
         self.assertIn('DATE(', result)
+        self.assertIn('TIME(', result)
+        self.assertNotIn('MAKEDATETIME', result)
 
 
 class TestIsDate(unittest.TestCase):
@@ -118,7 +120,10 @@ class TestAttrContextAware(unittest.TestCase):
 class TestSizeFunction(unittest.TestCase):
     def test_size(self):
         result = _dax('SIZE()')
-        self.assertIn('COUNTROWS(ALLSELECTED())', result)
+        self.assertIn('TODO: DAX conversion validation failed', result)
+        self.assertIn('BLANK()', result)
+        self.assertNotIn('COUNTROWS', result)
+        self.assertNotIn('ALLSELECTED', result)
 
 
 class TestAggIfToAggx(unittest.TestCase):
