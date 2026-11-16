@@ -2020,7 +2020,7 @@ class TestDateFunctionsExpanded(unittest.TestCase):
         self.assertEqual(result.count("'Facts'[EventDate]"), 2)
         self.assertEqual(result.count("'Facts'[EventTime]"), 2)
 
-    def test_makedatetime_measure_without_row_scope_stays_diagnostic(self):
+    def test_makedatetime_measure_without_row_scope_emits_warned_iterator(self):
         result = convert_tableau_formula_to_dax(
             "MAKEDATETIME([EventDate], [EventTime])",
             table_name='Facts',
@@ -2031,12 +2031,9 @@ class TestDateFunctionsExpanded(unittest.TestCase):
             fallback_on_invalid=True,
         )
 
-        self.assertIn('TODO', result.upper(), result)
-        self.assertIn('BLANK()', result.upper(), result)
-        self.assertNotRegex(
-            result,
-            re.compile(r"\b(?:SUMX|MAXX|SELECTEDVALUE)\s*\(", re.IGNORECASE),
-        )
+        self.assertIn('Unaggregated row expression best-effort approximation', result)
+        self.assertIn("SUMX('Facts'", result)
+        self.assertNotIn('TODO: DAX conversion validation failed', result)
 
     def test_makedatetime_nested_call_stays_diagnostic(self):
         result = convert_tableau_formula_to_dax(

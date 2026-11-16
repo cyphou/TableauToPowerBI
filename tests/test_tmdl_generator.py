@@ -2298,7 +2298,7 @@ class TestCrossTableMeasureClassification(unittest.TestCase):
             dax_context=context, col_metadata_map={},
         )
 
-    def test_unaggregated_measure_spanning_tables_requires_verified_source_grain(self):
+    def test_unaggregated_measure_spanning_tables_emits_warned_iterator(self):
         result = self.build(
             'IF([Invoice] > 0.08 * [Amount "Special" grant], [Weight], 0)',
             {'Invoice': 'Buildings', 'Amount "Special" grant': 'Households',
@@ -2307,11 +2307,10 @@ class TestCrossTableMeasureClassification(unittest.TestCase):
 
         self.assertNotIn('Poverty Weight', {c['name'] for c in result['columns']})
         measure = next(m for m in result['measures'] if m['name'] == 'Poverty Weight')
-        self.assertRegex(
-            measure['expression'],
-            r'(?is)^/\* TODO: DAX conversion validation failed for measure: '
-            r'.*source row scope.*grain.*\*/ BLANK\(\)$',
-        )
+        self.assertIn('Unaggregated row expression best-effort approximation',
+                      measure['expression'])
+        self.assertIn("SUMX('Buildings'", measure['expression'])
+        self.assertNotIn('TODO: DAX conversion validation failed', measure['expression'])
 
     def test_dependent_calculation_is_preclassified_as_a_measure(self):
         result = self.build(
@@ -2328,8 +2327,10 @@ class TestCrossTableMeasureClassification(unittest.TestCase):
         self.assertNotIn('Total Poverty Weight', column_names)
         total = next(m for m in result['measures']
                  if m['name'] == 'Total Poverty Weight')
-        self.assertIn('TODO: DAX conversion validation failed', total['expression'])
-        self.assertIn('BLANK()', total['expression'])
+        self.assertIn('Unaggregated row expression best-effort approximation',
+                      total['expression'])
+        self.assertIn("SUMX('Buildings'", total['expression'])
+        self.assertNotIn('TODO: DAX conversion validation failed', total['expression'])
 
     def test_single_table_row_calculation_remains_a_calculated_column(self):
         result = self.build(

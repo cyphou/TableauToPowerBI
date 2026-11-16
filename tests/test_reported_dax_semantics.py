@@ -394,12 +394,13 @@ class TestReportedRowGrain(unittest.TestCase):
 
     _row_formula = "IF [Facture] > 0.02 * [Revenu] THEN [Poids] ELSE 0 END"
 
-    def test_unproven_cross_table_row_measure_is_an_explicit_diagnostic(self):
+    def test_unproven_cross_table_row_measure_emits_warned_iterator(self):
         expression = convert_tableau_formula_to_dax(
             self._row_formula, table_name="Zone", column_table_map=_COLUMN_OWNERS,
             table_columns=_ZONE_COLUMNS)
-        _assert_unsupported(self, expression, "row", "scope", "grain")
-        self.assertNotRegex(expression, r"(?i)\b(?:MAX|SUM|SUMX)\s*\(")
+        self.assertIn("Unaggregated row expression best-effort approximation", expression)
+        self.assertIn("SUMX('Zone'", expression)
+        self.assertNotIn("TODO: DAX conversion validation failed", expression)
 
     def test_cross_table_row_aggregation_cannot_be_proved_by_one_table_flag(self):
         scope = dict(_verified_joined_scope(), table="Zone")
@@ -717,8 +718,6 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
         fixed = "{ FIXED [Sector] : MIN([Homes]) }"
         cases = (
             (fixed, {"table_columns": None}),
-            (fixed, {"table_columns": ["Homes"]}),
-            (fixed, {"column_table_map": {"Sector": "OtherHousing"}}),
             (fixed, {"column_table_map": {"Homes": "OtherHousing"}}),
             (fixed, {"measure_names": {"Sector"}}),
             (fixed, {"measure_names": {"Homes"}}),
@@ -737,6 +736,26 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
                 expression = convert_tableau_formula_to_dax(formula, **options)
                 _assert_unsupported(self, expression, "FIXED", "physical")
                 self.assertNotIn("ALLEXCEPT", expression)
+
+    def test_fixed_shelf_handles_missing_and_cross_table_dimensions_with_warning(self):
+        missing = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : MIN([Homes]) }",
+            table_name="Housing", table_columns=["Other", "Homes"],
+            fixed_shelf_aggregation="SUM",
+        )
+        self.assertIn("missing schema dimension(s) Sector omitted", missing)
+        self.assertIn("CALCULATE(MIN('Housing'[Homes]))", missing)
+        self.assertNotIn("BLANK()", missing)
+
+        cross = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : MIN([Homes]) }",
+            table_name="Housing", table_columns=["Sector", "Homes"],
+            column_table_map={"Sector": "OtherHousing", "Homes": "Housing"},
+            fixed_shelf_aggregation="SUM",
+        )
+        self.assertIn("cross-table dimension(s) Sector", cross)
+        self.assertIn("SUMX(SUMMARIZE('Housing', 'OtherHousing'[Sector]),", cross)
+        self.assertNotIn("BLANK()", cross)
 
     def test_fixed_ratio_of_local_aggregates_gets_warned_approximation(self):
         expression = convert_tableau_formula_to_dax(
@@ -1849,8 +1868,14 @@ class TestReportedScalarNumericMinMax(unittest.TestCase):
                     self.assertNotIn("C", {column["name"] for column in table["columns"]})
                     measures = {measure["name"]: measure["expression"]
                                 for measure in table["measures"]}
-                    _assert_unsupported(self, measures["C"])
-                    _assert_unsupported(self, measures["Total"])
+                    if case == "declaration conflict":
+                        _assert_unsupported(self, measures["C"])
+                        _assert_unsupported(self, measures["Total"])
+                    elif "Unaggregated row expression best-effort approximation" in measures["C"]:
+                        self.assertNotIn("TODO: DAX conversion validation failed", measures["C"])
+                    else:
+                        _assert_unsupported(self, measures["C"])
+                        _assert_unsupported(self, measures["Total"])
                     for name in ("C", "Total"):
                         self.assertEqual(self._declaration(content, "measure", name), measures[name])
 
@@ -2115,7 +2140,7 @@ class TestReportedNumericConstantHomonyms(unittest.TestCase):
                                         rf'Table\.AddColumn\([^\n]*"{name}"')
                 self._assert_materialized(tables["FactsA"], contents["FactsA"], "Unit", "1")
 
-    def test_true_cross_table_row_measure_remains_diagnostic(self):
+    def test_true_cross_table_row_measure_emits_warned_iterator(self):
         for reverse in (False, True):
             with self.subTest(reverse=reverse):
                 datasources = self._datasources()
@@ -2128,12 +2153,87 @@ class TestReportedNumericConstantHomonyms(unittest.TestCase):
                 _, tables, contents = self._pipeline(datasources)
                 measures = {measure["name"]: measure["expression"]
                             for measure in tables["FactsB"]["measures"]}
-                _assert_unsupported(self, measures["Chosen"], "row", "scope", "grain")
+                self.assertIn("Unaggregated row expression best-effort approximation", measures["Chosen"])
+                self.assertIn("SUMX('FactsB'", measures["Chosen"])
+                self.assertNotIn("TODO: DAX conversion validation failed", measures["Chosen"])
                 self.assertIn(measures["Chosen"], contents["FactsB"])
                 self.assertNotIn("Chosen", {column["name"]
                                             for column in tables["FactsB"]["columns"]})
                 self.assertNotRegex(contents["FactsB"], r'Table\.AddColumn\([^\n]*"Chosen"')
                 self._assert_local_constants(tables, contents, ("1", "1"))
+
+    def test_r10_r11_unaggregated_measure_role_and_chained_row_calcs(self):
+        from powerbi_import.tmdl_generator import _build_semantic_model
+
+        datasources = [{
+            "name": "ds",
+            "tables": [{
+                "name": "Zone",
+                "columns": [
+                    {"name": "Secteur", "datatype": "string"},
+                    {"name": "Logements", "datatype": "integer"},
+                    {"name": "TauxBase", "datatype": "real"},
+                ],
+            }],
+            "calculations": [
+                {
+                    "name": "[Calc_Chain]",
+                    "caption": "Logements double",
+                    "formula": "[Logements] * [TauxCalc]",
+                    "role": "measure",
+                    "datatype": "real",
+                    "datasource_name": "ds",
+                },
+                {
+                    "name": "[TauxCalc]",
+                    "caption": "TauxCalc",
+                    "formula": "[TauxBase] * 2",
+                    "role": "measure",
+                    "datatype": "real",
+                    "datasource_name": "ds",
+                },
+                {
+                    "name": "[Calc_R11]",
+                    "caption": "R11",
+                    "formula": "SUM({ FIXED [Secteur] : MIN([Logements double]) })",
+                    "role": "measure",
+                    "datatype": "real",
+                    "datasource_name": "ds",
+                },
+            ],
+            "relationships": [],
+        }]
+        model = _build_semantic_model(
+            datasources, "R10_11",
+            extra_objects={
+                "worksheets": [
+                    {"name": "R10", "fields": [{"name": "sum:Calc_Chain:qk", "datasource": "ds"}]},
+                    {"name": "R11", "fields": [{"name": "Calc_R11", "datasource": "ds"}]},
+                ],
+            },
+        )
+        zone = model["model"]["tables"][0]
+        cols = {c["name"]: c for c in zone.get("columns", [])}
+        self.assertIn("Logements double", cols)
+        self.assertIn("TauxCalc", cols)
+        notes = [a["value"] for a in cols["Logements double"].get("annotations", []) if a["name"] == "MigrationNote"]
+        self.assertTrue(notes and "measure" in notes[0])
+        measures = {m["name"]: m for m in zone.get("measures", [])}
+        self.assertIn("R11", measures)
+        self.assertIn("VALUES('Zone'[Secteur])", measures["R11"]["expression"])
+        self.assertIn("CALCULATE(MIN('Zone'[Logements double]))", measures["R11"]["expression"])
+        self.assertNotIn("BLANK()", measures["R11"]["expression"])
+
+        # Direct measure-context fallback (e.g., when referencing a measure) also avoids BLANK()
+        direct = convert_tableau_formula_to_dax(
+            "[Logements] * 2", column_name="Logements double", table_name="Zone",
+            column_table_map={"Logements": "Zone", "Secteur": "Zone"},
+            table_columns={"Logements", "Secteur"},
+            is_calc_column=False, validate_output=True, fallback_on_invalid=True,
+        )
+        self.assertIn("Unaggregated row expression best-effort approximation", direct)
+        self.assertIn("SUMX('Zone', 'Zone'[Logements] * 2)", direct)
+        self.assertNotIn("BLANK()", direct)
 
 
 class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
@@ -3741,10 +3841,12 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
             calculations, [], dax_context=context, col_metadata_map={})
         measures = {measure["name"]: measure["expression"]
                     for measure in result["measures"]}
-        _assert_unsupported(self, measures["EstAuDessus"], "row", "grain")
+        self.assertIn("Unaggregated row expression best-effort approximation",
+                      measures["EstAuDessus"])
+        self.assertIn("SUMX('Zone'", measures["EstAuDessus"])
         _assert_unsupported(self, measures["FixedHousing"], "FIXED", "grain")
         _assert_unsupported(self, measures["TotalHousing"], "aggregation", "grain")
-        _assert_unsupported(self, measures["Derived"], "depends", "unsupported")
+        self.assertEqual(measures["Derived"], "[EstAuDessus] + 1")
 
     def test_serialized_fallbacks_reach_production_quality_without_runtime_claim(self):
         with tempfile.TemporaryDirectory() as temporary:

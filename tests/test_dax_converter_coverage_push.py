@@ -1235,8 +1235,9 @@ class TestResolveColumnsInternals(unittest.TestCase):
             column_table_map={'Amount': 'OtherTable'},
             table_columns={'Amount'}
         )
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
+        self.assertIn('Unaggregated row expression best-effort approximation', result)
+        self.assertIn("SUMX('Sales', 'Sales'[Amount])", result)
+        self.assertNotIn('TODO: DAX conversion validation failed', result)
 
     def test_reversed_bracket_escape_in_column_ref(self):
         # Column name has orphan ) inside brackets [Col)] that maps to Col]

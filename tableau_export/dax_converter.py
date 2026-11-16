@@ -455,6 +455,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # The structural regexes must not see keywords in strings or field names.
     dax = restore(_convert_if_structure(_convert_case_structure(masked)))
 
+    row_approx_state = {}
     dax, grain_issue = _prepare_source_expression(
         dax, table_name=table_name, column_table_map=column_table_map,
         measure_names=measure_names, is_calc_column=is_calc_column,
@@ -464,6 +465,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         nonphysical_names={name for mapping in (calc_map, param_map)
                            for name in (*mapping.keys(), *mapping.values())
                            if isinstance(name, str)},
+        _row_approx_out=row_approx_state,
     )
     if grain_issue:
         return _unsupported_conversion(grain_issue)
@@ -648,8 +650,14 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # === Phase 5h: Wrap bare column refs in measures with MAX() ===
     # In measure context, bare 'Table'[Col] references (not inside an
     # aggregation/iterator) cause PBI "single value cannot be determined".
-    # Wrap them in MAX() — safe for LOD-derived calc columns.
-    if not is_calc_column and table_columns:
+    # Skip when wrapping the whole row expression in an iterator below.
+    _wrap_in_iterator = (
+        bool(row_approx_state.get('unaggregated_row_approx'))
+        and not row_approx_state.get('has_agg_calls')
+        and bool(table_name)
+        and (calc_datatype or '').lower() not in ('boolean', 'bool')
+    )
+    if not is_calc_column and table_columns and not _wrap_in_iterator:
         dax = _wrap_bare_column_refs_in_measure(dax, table_name,
                                                  table_columns, measure_names,
                                                  bool_columns=bool_columns)
@@ -676,6 +684,24 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     dax = _convert_datepart_quarter(dax)
     dax = _convert_datepart_week(dax)
     dax = dax.replace(regex_series_value_token, '[Value]')
+
+    if row_approx_state.get('unaggregated_row_approx'):
+        _row_note = (
+            'Unaggregated row expression best-effort approximation; '
+            'row scope, shelf aggregation and total grain unverified'
+        )
+        if _wrap_in_iterator:
+            _shelf = (fixed_shelf_aggregation or lod_shelf_aggregation or 'SUM').strip().upper()
+            _iter_map = {'SUM': 'SUMX', 'AVG': 'AVERAGEX', 'AVERAGE': 'AVERAGEX',
+                         'MIN': 'MINX', 'MAX': 'MAXX'}
+            _iterator = _iter_map.get(_shelf, 'SUMX')
+            if (_iterator == 'SUMX'
+                    and (calc_datatype or '').lower() in ('string', 'str', 'date', 'datetime')):
+                _iterator = 'MAXX'
+            _safe_tbl = "'" + table_name.replace("'", "''") + "'"
+            dax = f'/* {_row_note} */ {_iterator}({_safe_tbl}, {dax})'
+        else:
+            dax = f'/* {_row_note} */ {dax}'
 
     # === Phase 7: Optional conversion guard validation (Phase 3 foundation) ===
     if validate_output:
@@ -1245,33 +1271,72 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
         return None
     available = set(table_columns)
     measures = {name.casefold() for name in measure_names if isinstance(name, str)}
-    for node in [*dimensions, value]:
-        owner, name = node[2], node[3]
-        if (name not in available or name.casefold() in measures
-                or (owner is not None and owner != table_name)
-                or (name in column_table_map and column_table_map[name] != table_name)):
-            return None
+
+    val_owner, val_name = value[2], value[3]
+    val_table = (
+        val_owner if val_owner is not None
+        else column_table_map.get(val_name, table_name)
+    )
+    if (val_name not in available and val_name not in column_table_map) or val_name.casefold() in measures:
+        return None
+    if val_table != table_name:
+        return None
+
     table = "'" + table_name.replace("'", "''") + "'"
 
-    def column(name):
-        return table + '[' + name.replace(']', ']]') + ']'
+    def column(name, col_table=table_name):
+        t_ref = "'" + col_table.replace("'", "''") + "'"
+        return t_ref + '[' + name.replace(']', ']]') + ']'
 
-    keys = ', '.join(column(name) for name in names)
-    domain = (f'VALUES({keys})' if len(names) == 1
-              else f'SUMMARIZE({table}, {keys})')
-    inner = aggregates[aggregate[1].upper()] + '(' + column(value[3]) + ')'
+    valid_keys = []
+    cross_table_dims = []
+    missing_dims = []
+    known_tables = set(column_table_map.values()) if isinstance(column_table_map, dict) else set()
+    for node in dimensions:
+        owner, name = node[2], node[3]
+        if name.casefold() in measures:
+            return None
+        if owner is not None and owner != table_name and owner not in known_tables:
+            return None
+        dim_table = (
+            owner if owner is not None
+            else column_table_map.get(name, table_name if name in available else None)
+        )
+        if dim_table is None or (dim_table == table_name and name not in available):
+            missing_dims.append(name)
+            continue
+        if dim_table != table_name:
+            cross_table_dims.append(name)
+        valid_keys.append(column(name, dim_table))
+
+    inner = aggregates[aggregate[1].upper()] + '(' + column(val_name) + ')'
+    extra_warnings = []
+    if cross_table_dims:
+        extra_warnings.append(
+            f"cross-table dimension(s) {', '.join(cross_table_dims)}")
+    if missing_dims:
+        extra_warnings.append(
+            f"missing schema dimension(s) {', '.join(missing_dims)} omitted")
+    extra_suffix = ('; ' + '; '.join(extra_warnings)) if extra_warnings else ''
     if shelf_evidence == 'inferred':
         note = (f'shelf ({shelf.lower()}: inferred) approximation; aggregation '
-                'inferred, source filter scope and totals unverified')
+                f'inferred, source filter scope and totals unverified{extra_suffix}')
     elif shelf_evidence == 'conflicting':
         note = (f'shelf ({shelf.lower()}: chosen from conflicting evidence) '
                 'approximation; aggregation conflict, source filter scope and '
-                'totals unverified')
+                f'totals unverified{extra_suffix}')
     else:
         note = (f'shelf ({shelf.lower()}:) approximation; source filter scope '
-                'and totals unverified')
-    expression = (
-        f'/* {note} */ {iterators[shelf]}({domain}, CALCULATE({inner}))')
+                f'and totals unverified{extra_suffix}')
+    if not valid_keys:
+        expression = f'/* {note} */ CALCULATE({inner})'
+    else:
+        keys = ', '.join(valid_keys)
+        domain = (f'VALUES({keys})'
+                  if len(valid_keys) == 1 and not cross_table_dims
+                  else f'SUMMARIZE({table}, {keys})')
+        expression = (
+            f'/* {note} */ {iterators[shelf]}({domain}, CALCULATE({inner}))')
     try:
         from powerbi_import.dax_validator import validate_dax_expression
         if validate_dax_expression(expression):
@@ -1936,7 +2001,7 @@ def _prepare_source_expression(text, *, table_name, column_table_map,
                                measure_names, is_calc_column, table_columns,
                                calc_datatype, verified_row_scope,
                                date_columns=None, numeric_columns=None,
-                               nonphysical_names=()):
+                               nonphysical_names=(), _row_approx_out=None):
     """Fail closed on unknown row grain; otherwise preserve nullable logic."""
     try:
         root = _SourceExpressionParser(text).parse()
@@ -1994,6 +2059,15 @@ def _prepare_source_expression(text, *, table_name, column_table_map,
         issue, force_arithmetic = _check_source_grain(
             root, table_name, column_table_map, measure_names,
             is_calc_column, table_columns, verified_row_scope)
+        if (issue == ('unaggregated row expression requires source row scope, '
+                      'shelf aggregation and total grain')
+                and isinstance(_row_approx_out, dict)):
+            _row_approx_out['unaggregated_row_approx'] = True
+            _row_approx_out['has_agg_calls'] = any(
+                part[0] == 'call' and part[1].upper() in _SOURCE_AGGREGATES
+                for part in _source_walk(root)
+            )
+            issue = None
         if issue:
             return text, issue
         return _render_nullable_source(

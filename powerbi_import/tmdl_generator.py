@@ -4019,6 +4019,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             and reference not in prelim_calc_col_raws
         )
 
+    _pc_meta = []
     for _pc in calculations:
         _pc_name, _pc_caption = _calculation_identity(_pc)
         _pc_formula = _pc.get('formula', '').strip()
@@ -4028,19 +4029,62 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         _pc_has_agg = ((bool(_agg_pattern.search(_pc_formula))
                 and id(_pc) not in scalar_minmax_contexts)
                    or bool(_lod_pattern.search(_pc_formula)))
-        # Check for physical column refs (refs not in calc_map/measure_names)
         _pc_refs = re.findall(r'\[([^\]]+)\]', _pc_formula)
-        _pc_has_col = id(_pc) in scalar_minmax_contexts
-        for _r in _pc_refs:
-            if _r == _pc_caption or _r.startswith('Parameters'):
-                continue
-            if (_r in group_column_names
-                    or not (_r in measure_names_ctx or _r in calc_map_ctx.values()
-                            or _r in calc_map_ctx)):
-                _pc_has_col = True
-                break
         _pc_cross_table_measure = _is_unaggregated_cross_table_measure(
             _pc, _pc_formula, _pc_has_agg, column_table_map, calc_map_ctx)
+        if (_pc_has_agg or (_pc_is_literal and not _pc_numeric_constant)
+                or _pc_cross_table_measure):
+            measure_names_ctx.add(_pc_caption)
+        _pc_meta.append((
+            _pc, _pc_name, _pc_caption, _pc_role,
+            _pc_numeric_constant, _pc_is_literal, _pc_has_agg,
+            _pc_refs, _pc_cross_table_measure,
+        ))
+
+    _cc_changed = True
+    while _cc_changed:
+        _cc_changed = False
+        for (_pc, _pc_name, _pc_caption, _pc_role,
+             _pc_numeric_constant, _pc_is_literal, _pc_has_agg,
+             _pc_refs, _pc_cross_table_measure) in _pc_meta:
+            if _pc_name in prelim_calc_col_raws or _pc_has_agg or _pc_cross_table_measure:
+                continue
+            _pc_has_measure_dep = (
+                str(_pc_role).strip().casefold() == 'measure'
+                and id(_pc) not in scalar_minmax_contexts
+                and any(
+                    _r in measure_names_ctx
+                    and _r not in prelim_calc_col_captions
+                    and _r not in prelim_calc_col_raws
+                    for _r in _pc_refs if _r != _pc_caption and not _r.startswith('Parameters')
+                )
+            )
+            if _pc_has_measure_dep:
+                continue
+            _pc_has_col = id(_pc) in scalar_minmax_contexts
+            for _r in _pc_refs:
+                if _r == _pc_caption or _r.startswith('Parameters'):
+                    continue
+                if (_r in group_column_names
+                        or _r in prelim_calc_col_captions
+                        or _r in prelim_calc_col_raws
+                        or not (_r in measure_names_ctx or _r in calc_map_ctx.values()
+                                or _r in calc_map_ctx)):
+                    _pc_has_col = True
+                    break
+            _pc_is_cc = (
+                _pc_numeric_constant or (not _pc_is_literal and (
+                    _pc_role == 'dimension' or _pc_has_col)))
+            if _pc_is_cc:
+                prelim_calc_col_captions.add(_pc_caption)
+                prelim_calc_col_raws.add(_pc_name)
+                _cc_changed = True
+
+    for (_pc, _pc_name, _pc_caption, _pc_role,
+         _pc_numeric_constant, _pc_is_literal, _pc_has_agg,
+         _pc_refs, _pc_cross_table_measure) in _pc_meta:
+        if _pc_name in prelim_calc_col_raws:
+            continue
         _pc_measure_dependency = (
             str(_pc_role).strip().casefold() == 'measure'
             and id(_pc) not in scalar_minmax_contexts
@@ -4048,15 +4092,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         )
         if _pc_cross_table_measure or _pc_measure_dependency:
             measure_names_ctx.add(_pc_caption)
-            continue
-        # A formula without aggregation that has physical column refs is a
-        # calculated column regardless of Tableau's role attribute.
-        _pc_is_cc = not _pc_has_agg and (
-            _pc_numeric_constant or (not _pc_is_literal and (
-                _pc_role == 'dimension' or _pc_has_col)))
-        if _pc_is_cc:
-            prelim_calc_col_captions.add(_pc_caption)
-            prelim_calc_col_raws.add(_pc_name)
 
     # --- Pre-classification fixup ---
     # Iteratively remove calcs from the prelim-calc-col sets when they
@@ -4340,6 +4375,10 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 name for name, owner in local_columns.items()
                 if owner == table_name
             }
+            for _grp_name in group_column_names:
+                if _grp_name and fixed_column_table_map.get(_grp_name, table_name) == table_name:
+                    fixed_table_columns.add(_grp_name)
+                    fixed_column_table_map.setdefault(_grp_name, table_name)
             for candidate in calculations:
                 candidate_name, candidate_caption = _calculation_identity(candidate)
                 candidate_target = dax_context.get(
@@ -4454,6 +4493,14 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             migration_note = scalar_approximation.group(1).strip()
             logger.warning("%s for '%s' on table '%s'",
                            migration_note, calc_name, table_name)
+        row_approximation = re.match(
+            r'/\*\s*(Unaggregated row expression best-effort approximation; [^*]+)\s*\*/',
+            dax_formula, re.IGNORECASE,
+        )
+        if row_approximation:
+            migration_note = row_approximation.group(1).strip()
+            logger.warning("%s for '%s' on table '%s'",
+                           migration_note, calc_name, table_name)
 
         # Phase 3: record conversion guard fallback to recovery
         if dax_formula and 'TODO: DAX conversion validation failed' in dax_formula:
@@ -4520,6 +4567,12 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                         "datasource_name": calc.get('datasource_name', ''),
                     },
                 }
+            if (not migration_note
+                    and str(role).strip().casefold() == 'measure'):
+                migration_note = (
+                    "Tableau role was 'measure'; materialized as a calculated "
+                    "column so shelf and FIXED aggregations can reference it"
+                )
             if migration_note:
                 bim_calc_col['annotations'] = [{
                     'name': 'MigrationNote', 'value': migration_note,
@@ -4585,7 +4638,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if migration_note:
                 bim_measure['_migration_note'] = migration_note
                 if (fixed_approximation or fixed_ratio_approximation
-                    or running_approximation or scalar_approximation):
+                    or running_approximation or scalar_approximation
+                    or row_approximation):
                     bim_measure['annotations'] = [{
                         'name': 'MigrationNote', 'value': migration_note,
                     }]
