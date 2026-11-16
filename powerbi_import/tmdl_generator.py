@@ -4321,6 +4321,19 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         scalar_minmax_context = scalar_minmax_contexts.get(id(calc), {})
         if scalar_minmax_context:
             conversion_column_table_map = scalar_minmax_context['column_table_map']
+        row_approx_measure_names = set()
+        for existing_measure in result_table.get('measures', []):
+            existing_name = existing_measure.get('name')
+            existing_note = existing_measure.get('_migration_note', '')
+            existing_expression = existing_measure.get('expression', '')
+            existing_body = re.sub(
+                r'^\s*/\*.*?\*/\s*', '', existing_expression,
+                count=1, flags=re.DOTALL)
+            if (existing_name
+                    and existing_note.startswith(
+                        'Unaggregated row expression best-effort approximation;')
+                    and re.match(r'\s*SUMX\s*\(', existing_body, re.IGNORECASE)):
+                row_approx_measure_names.add(existing_name)
         matching_table_calc_contexts = []
         for alias in (calc_name, caption):
             for context in dax_context.get('table_calc_context_map', {}).get(alias, []):
@@ -4349,6 +4362,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             bool_columns=_bool_table_columns,
             date_columns=_date_table_columns,
             numeric_columns=scalar_minmax_context.get('numeric_columns', _numeric_table_columns),
+            row_approx_measure_names=row_approx_measure_names,
             validate_output=True,
             fallback_on_invalid=True,
             verified_fixed_scope=scopes_by_calculation.get(calc_name),
@@ -4407,6 +4421,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 fixed_shelf_evidence=dax_context.get(
                     'fixed_shelf_evidence', {}).get(id(calc), 'explicit'),
                 lod_shelf_aggregation=fixed_shelf,
+                row_approx_measure_names=row_approx_measure_names,
             )
         if source_conflict_path:
             target_kind = 'column' if is_calc_col else 'measure'
@@ -4499,6 +4514,14 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         )
         if row_approximation:
             migration_note = row_approximation.group(1).strip()
+            logger.warning("%s for '%s' on table '%s'",
+                           migration_note, calc_name, table_name)
+        row_measure_approximation = re.match(
+            r'/\*\s*(Row-measure aggregation best-effort approximation; [^*]+)\s*\*/',
+            dax_formula, re.IGNORECASE,
+        )
+        if row_measure_approximation:
+            migration_note = row_measure_approximation.group(1).strip()
             logger.warning("%s for '%s' on table '%s'",
                            migration_note, calc_name, table_name)
 
@@ -4639,7 +4662,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 bim_measure['_migration_note'] = migration_note
                 if (fixed_approximation or fixed_ratio_approximation
                     or running_approximation or scalar_approximation
-                    or row_approximation):
+                    or row_approximation or row_measure_approximation):
                     bim_measure['annotations'] = [{
                         'name': 'MigrationNote', 'value': migration_note,
                     }]

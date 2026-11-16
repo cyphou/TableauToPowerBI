@@ -7,7 +7,7 @@ Converts Tableau calculation formulas to valid DAX expressions.
 
 import logging
 import re
-from typing import cast
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +261,8 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                                     date_columns=None,
                                     lod_shelf_aggregation=None,
                                     numeric_columns=None,
-                                    table_calc_context=None):
+                                    table_calc_context=None,
+                                    row_approx_measure_names=()):
     """
     Converts a Tableau formula to DAX with context resolution.
 
@@ -304,6 +305,8 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         table_calc_context: Optional worksheet table-calculation context. Its
             order_by metadata refines running-calculation diagnostics only; it
             does not prove mark grain, unique ordering, tie behavior or totals.
+        row_approx_measure_names: Names of previously generated SUMX row-measure
+            approximations; SUM around one of these may be unwrapped with a note.
 
     Returns:
         str: Valid DAX formula
@@ -340,6 +343,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
     # Remove them before quote conversion and validation.
     dax = _strip_tableau_comments(dax)
     dax = _normalize_tableau_quote_escapes(dax)
+    dax = _normalize_tableau_group_references(dax)
     # Tableau's standalone NULL (and legacy NULL()) is a DAX BLANK().
     # Normalize before resolving references so captions/parameter values
     # introduced later cannot be mistaken for source-language literals.
@@ -419,15 +423,20 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         approximation = _compile_approximate_fixed_shelf(
             source_masked, source_restore, table_name=table_name,
             column_table_map=column_table_map, measure_names=measure_names,
-            table_columns=table_columns, is_calc_column=is_calc_column,
+            table_columns=table_columns, numeric_columns=numeric_columns,
+            is_calc_column=is_calc_column,
             shelf=fixed_shelf_aggregation, calc_map=calc_map,
-            shelf_evidence=fixed_shelf_evidence)
+            shelf_evidence=fixed_shelf_evidence,
+            row_approx_measure_names=row_approx_measure_names)
         if approximation is not None:
             return approximation
         ratio_approximation = _compile_approximate_fixed_aggregate_ratio(
             masked, restore, table_name=table_name,
             column_table_map=column_table_map, measure_names=measure_names,
-            table_columns=table_columns, is_calc_column=is_calc_column,
+            table_columns=table_columns, numeric_columns=numeric_columns,
+            is_calc_column=is_calc_column,
+            shelf=fixed_shelf_aggregation,
+            row_approx_measure_names=row_approx_measure_names,
         )
         if ratio_approximation is not None:
             return ratio_approximation
@@ -438,7 +447,9 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         approximation = _compile_approximate_fixed_aggregate_ratio(
             masked, restore, table_name=table_name,
             column_table_map=column_table_map, measure_names=measure_names,
-            table_columns=table_columns, is_calc_column=is_calc_column,
+            table_columns=table_columns, numeric_columns=numeric_columns,
+            is_calc_column=is_calc_column,
+            row_approx_measure_names=row_approx_measure_names,
         )
         if approximation is not None:
             return approximation
@@ -462,6 +473,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         table_columns=table_columns, calc_datatype=calc_datatype,
         verified_row_scope=verified_row_scope, date_columns=date_columns,
         numeric_columns=numeric_columns,
+        row_approx_measure_names=row_approx_measure_names,
         nonphysical_names={name for mapping in (calc_map, param_map)
                            for name in (*mapping.keys(), *mapping.values())
                            if isinstance(name, str)},
@@ -702,6 +714,14 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
             dax = f'/* {_row_note} */ {_iterator}({_safe_tbl}, {dax})'
         else:
             dax = f'/* {_row_note} */ {dax}'
+    if row_approx_state.get('row_measure_sum_unwrapped'):
+        names = ', '.join(row_approx_state['row_measure_sum_unwrapped'])
+        note = (
+            'Row-measure aggregation best-effort approximation; SUM over '
+            f'{names} unwrapped to its existing SUMX; source shelf and total '
+            'grain unverified'
+        )
+        dax = f'/* {note} */ {dax}'
 
     # === Phase 7: Optional conversion guard validation (Phase 3 foundation) ===
     if validate_output:
@@ -750,6 +770,11 @@ def _protect_source_tokens(text):
         return pattern.sub(lambda match: tokens[int(match.group(1))], value)
 
     return masked, restore
+
+
+def _normalize_source_control_syntax(text):
+    masked, restore = _protect_source_tokens(text)
+    return restore(_convert_if_structure(_convert_case_structure(masked)))
 
 
 def _aggregate_contains_lod(masked):
@@ -911,10 +936,106 @@ def _source_walk(node):
         yield from _source_walk(child)
 
 
+_NUMERIC_SCALAR_SOURCE_ARITIES = {
+    'ABS': {1}, 'ROUND': {1, 2}, 'POWER': {2}, 'SQRT': {1},
+    'EXP': {1}, 'LN': {1}, 'LOG': {2}, 'SIGN': {1},
+    'MIN': {2}, 'MAX': {2},
+}
+_NUMERIC_ROW_ITERATORS = {
+    'SUM': 'SUMX', 'AVG': 'AVERAGEX', 'AVERAGE': 'AVERAGEX',
+    'MIN': 'MINX', 'MAX': 'MAXX',
+}
+
+
 def _ungroup_source(node):
     while node[0] == 'group':
         node = node[1]
     return node
+
+
+def _is_numeric_scalar_source(node, is_numeric_reference):
+    """Check a scalar AST without accepting aggregates or unknown functions."""
+    node = _ungroup_source(node)
+    if node[0] == 'ref':
+        return is_numeric_reference(node)
+    if node[0] == 'atom':
+        return re.fullmatch(
+            r'(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', node[1]) is not None
+    if node[0] == 'group':
+        return _is_numeric_scalar_source(node[1], is_numeric_reference)
+    if node[0] == 'unary':
+        return (node[1] in ('+', '-')
+                and _is_numeric_scalar_source(node[2], is_numeric_reference))
+    if node[0] == 'op':
+        return (node[1] in ('+', '-', '*', '/', '^')
+                and _is_numeric_scalar_source(node[2], is_numeric_reference)
+                and _is_numeric_scalar_source(node[3], is_numeric_reference))
+    if node[0] == 'call':
+        name, args = node[1].upper(), node[2]
+        if name == 'IF':
+            branch_indexes = (1,) if len(args) == 2 else (
+                (1, 2) if len(args) == 3 else ())
+        elif name == 'IIF':
+            branch_indexes = (1, 2) if len(args) == 3 else (
+                (1, 2, 3) if len(args) == 4 else ())
+        else:
+            branch_indexes = ()
+        if name in ('IF', 'IIF'):
+            return bool(branch_indexes) and all(
+                _is_numeric_scalar_source(args[index], is_numeric_reference)
+                for index in branch_indexes
+            )
+        arities = _NUMERIC_SCALAR_SOURCE_ARITIES.get(name, set())
+        return (len(args) in arities and all(
+            _is_numeric_scalar_source(arg, is_numeric_reference) for arg in args))
+    return False
+
+
+def _compile_numeric_row_aggregate(aggregate, expression, *, table_name,
+                                   table_columns, numeric_columns,
+                                   column_table_map, measure_names, source_text):
+    """Lower a whitelisted numeric row expression over local physical rows."""
+    iterator = _NUMERIC_ROW_ITERATORS.get(aggregate.upper())
+    if (iterator is None or not isinstance(table_name, str) or not table_name
+            or not isinstance(table_columns, (list, tuple, set, frozenset))
+            or not isinstance(numeric_columns, (list, tuple, set, frozenset))):
+        return None
+    available = set(table_columns)
+    numeric = set(numeric_columns)
+    measures = {name.casefold() for name in measure_names
+                if isinstance(name, str)}
+    references = [node for node in _source_walk(expression) if node[0] == 'ref']
+
+    def is_numeric_reference(node):
+        _, _, owner, name = node
+        return (name in available and name in numeric
+                and name.casefold() not in measures
+                and (owner is None or owner == table_name)
+                and column_table_map.get(name, table_name) == table_name)
+
+    if (not references
+            or not _is_numeric_scalar_source(expression, is_numeric_reference)):
+        return None
+
+    table = "'" + table_name.replace("'", "''") + "'"
+
+    def qualify(node):
+        if node[0] == 'ref':
+            name = node[3]
+            return ('ref', table + '[' + name.replace(']', ']]') + ']',
+                    table_name, name)
+        if node[0] == 'op':
+            return (node[0], node[1], qualify(node[2]), qualify(node[3]))
+        if node[0] in ('unary', 'group'):
+            return (*node[:-1], qualify(node[-1]))
+        if node[0] == 'call':
+            return (node[0], node[1], tuple(qualify(argument) for argument in node[2]))
+        return node
+
+    scalar = _render_nullable_source(
+        qualify(expression), source_text, 'number', True,
+        null_numeric_functions=True)
+    return f'{iterator}({table}, {scalar})'
 
 
 def _scalar_numeric_minmax_reference(node, *, table_name, table_columns,
@@ -1096,16 +1217,22 @@ def _compile_verified_fixed_sum(masked, restore, *, table_name, column_table_map
 
 def _compile_approximate_fixed_aggregate_ratio(
         masked, restore, *, table_name, column_table_map, measure_names,
-        table_columns, is_calc_column):
+    table_columns, numeric_columns, is_calc_column, shelf=None,
+    row_approx_measure_names=()):
     """Best-effort lowering for FIXED ratios of local aggregate columns."""
     if is_calc_column or not isinstance(table_name, str) or not table_name:
         return None
     match = re.fullmatch(
-        r'\s*\{\s*FIXED\s+(?P<dims>[^:{}()]+)\s*:\s*'
-        r'(?P<body>[^{}]+)\}\s*',
+        r'\s*(?:(?P<outer>SUM|AVG|MIN|MAX)\s*\(\s*)?'
+        r'\{\s*FIXED\s+(?P<dims>[^:{}()]+)\s*:\s*'
+        r'(?P<body>[^{}]+)\}\s*(?(outer)\))\s*',
         masked, re.IGNORECASE | re.DOTALL,
     )
     if not match:
+        return None
+    outer = (match.group('outer') or '').upper()
+    shelf = shelf.strip().upper() if isinstance(shelf, str) else None
+    if outer and shelf and outer != shelf:
         return None
     try:
         dimensions = [
@@ -1125,8 +1252,7 @@ def _compile_approximate_fixed_aggregate_ratio(
     aggregates = {'SUM': 'SUM', 'AVG': 'AVERAGE', 'AVERAGE': 'AVERAGE',
                   'MIN': 'MIN', 'MAX': 'MAX'}
 
-    def aggregate_reference(
-            node: object) -> tuple[str, tuple[str, str, str | None, str]] | None:
+    def aggregate_reference(node: object):
         parsed = _ungroup_source(node)
         if not isinstance(parsed, tuple) or len(parsed) != 3 or parsed[0] != 'call':
             return None
@@ -1135,11 +1261,18 @@ def _compile_approximate_fixed_aggregate_ratio(
             return None
         function = aggregates.get(call[1].upper())
         argument = _ungroup_source(call[2][0])
-        if (function is None or not isinstance(argument, tuple)
-                or len(argument) != 4 or argument[0] != 'ref'):
+        if function is None:
             return None
-        argument = cast(tuple[str, str, str | None, str], argument)
-        return function, argument
+        if isinstance(argument, tuple) and len(argument) == 4 and argument[0] == 'ref':
+            return function, argument
+        row_expression = _compile_numeric_row_aggregate(
+            call[1].upper(), argument, table_name=table_name,
+            table_columns=table_columns, numeric_columns=numeric_columns,
+            column_table_map=column_table_map, measure_names=measure_names,
+            source_text=restore(match.group('body')).strip())
+        if row_expression is None:
+            return None
+        return function, ('row_expression', row_expression)
 
     numerator = aggregate_reference(body[2])
     denominator_node = _ungroup_source(body[3])
@@ -1159,36 +1292,141 @@ def _compile_approximate_fixed_aggregate_ratio(
         table_columns, (list, tuple, set, frozenset)) else None)
     measures = {name.casefold() for name in (measure_names or ())
                 if isinstance(name, str)}
-    resolved_names = []
-    for node in [*dimensions, numerator[1], denominator[1]]:
-        owner, name = node[2], node[3]
-        mapped_owner = column_table_map.get(name) if isinstance(column_table_map, dict) else None
+    row_approx_measures = {name.casefold() for name in row_approx_measure_names
+                           if isinstance(name, str)}
+    available_folded = {name.casefold() for name in available or ()}
+
+    def aggregate_operand(aggregate, reference):
+        if reference[0] == 'row_expression':
+            return ('row_expression', aggregate, reference[1])
+        owner, name = reference[2], reference[3]
+        mapped_owner = (column_table_map.get(name)
+                        if isinstance(column_table_map, dict) else None)
+        is_measure = (name.casefold() in measures
+                      and name.casefold() not in available_folded
+                      and mapped_owner is None)
+        if is_measure:
+            if (aggregate != 'SUM'
+                    or name.casefold() not in row_approx_measures
+                    or (owner is not None and owner != table_name)):
+                return None
+            return ('measure', aggregate, name)
         if (owner is not None and owner != table_name
                 or mapped_owner is not None and mapped_owner != table_name
                 or available is not None and name not in available
                 or name.casefold() in measures):
             return None
-        resolved_names.append(name)
-    dimension_names = resolved_names[:len(dimensions)]
+        return ('column', aggregate, name)
+
+    numerator_binding = aggregate_operand(*numerator)
+    denominator_binding = aggregate_operand(*denominator)
+    if numerator_binding is None or denominator_binding is None:
+        return None
+
+    known_tables = (set(column_table_map.values())
+                    if isinstance(column_table_map, dict) else set())
+    dimension_keys = []
+    cross_table_dims = []
+    missing_dims = []
+    for node in dimensions:
+        owner, name = node[2], node[3]
+        if (name.casefold() in measures
+                and name.casefold() not in available_folded):
+            return None
+        if owner is not None and owner != table_name and owner not in known_tables:
+            return None
+        if owner is not None:
+            dimension_table = owner
+        elif isinstance(column_table_map, dict) and name in column_table_map:
+            dimension_table = column_table_map[name]
+        else:
+            dimension_table = (table_name if available is None or name in available
+                               else None)
+        if (dimension_table is None
+                or (dimension_table == table_name and available is not None
+                    and name not in available)):
+            missing_dims.append(name)
+            continue
+        dimension_keys.append((dimension_table, name))
+        if dimension_table != table_name:
+            cross_table_dims.append(name)
+
+    dimension_names = [name for _, name in dimension_keys]
     if len({name.casefold() for name in dimension_names}) != len(dimension_names):
+        return None
+    if cross_table_dims and not outer and not shelf:
         return None
 
     safe_table = "'" + table_name.replace("'", "''") + "'"
 
-    def column(name):
-        return safe_table + '[' + name.replace(']', ']]') + ']'
+    def column(name, owner=table_name):
+        table_ref = "'" + owner.replace("'", "''") + "'"
+        return table_ref + '[' + name.replace(']', ']]') + ']'
 
-    keys = ', '.join(column(name) for name in dimension_names)
+    def operand(binding):
+        kind, aggregate, name = binding
+        if kind == 'measure':
+            return '[' + name.replace(']', ']]') + ']'
+        if kind == 'row_expression':
+            return name
+        return aggregate + '(' + column(name) + ')'
+
+    numerator_value = operand(numerator_binding)
+    denominator_value = operand(denominator_binding)
+    ratio = f'DIVIDE({numerator_value}, {denominator_value})'
+    keys = ', '.join(column(name, owner) for owner, name in dimension_keys)
+    warnings = []
+    if cross_table_dims:
+        warnings.append(
+            f"cross-table dimension(s) {', '.join(cross_table_dims)}; "
+            "relationship propagation unverified")
+    if missing_dims:
+        warnings.append(f"missing schema dimension(s) {', '.join(missing_dims)} omitted")
+    measure_operands = [
+        name for kind, _, name in (numerator_binding, denominator_binding)
+        if kind == 'measure'
+    ]
+    row_expression_operands = [
+        aggregate for kind, aggregate, _ in (numerator_binding, denominator_binding)
+        if kind == 'row_expression'
+    ]
+    if measure_operands:
+        warnings.append(
+            f"SUM over row-expression measure(s) {', '.join(measure_operands)} "
+            "unwrapped")
+    if row_expression_operands:
+        iterators = sorted({
+            _NUMERIC_ROW_ITERATORS[aggregate]
+            for aggregate in row_expression_operands
+        })
+        warnings.append(
+            f"numeric row-expression operand(s) lowered via {', '.join(iterators)}")
+    warning_suffix = ('; ' + '; '.join(warnings)) if warnings else ''
     note = (
         'FIXED best-effort approximation; source filters, aggregation scope '
-        'and total grain unverified'
+        f'and total grain unverified{warning_suffix}'
     )
-    result = (
-        f'/* {note} */ CALCULATE('
-        f'DIVIDE({numerator[0]}({column(numerator[1][3])}), '
-        f'{denominator[0]}({column(denominator[1][3])})), '
-        f'ALLEXCEPT({safe_table}, {keys}))'
-    )
+    iterator_aggregations = {
+        'SUM': 'SUMX', 'AVG': 'AVERAGEX', 'MIN': 'MINX', 'MAX': 'MAXX',
+    }
+    shelf_aggregation = outer or (shelf if cross_table_dims else None)
+    if shelf_aggregation and shelf_aggregation not in iterator_aggregations:
+        return None
+    if shelf_aggregation and dimension_keys:
+        if cross_table_dims:
+            domain = f'SUMMARIZECOLUMNS({keys})'
+        else:
+            domain = (f'VALUES({keys})' if len(dimension_keys) == 1
+                      else f'SUMMARIZE({safe_table}, {keys})')
+        result = (
+            f'/* {note} */ {iterator_aggregations[shelf_aggregation]}'
+            f'({domain}, CALCULATE({ratio}))'
+        )
+    elif dimension_keys:
+        result = (f'/* {note} */ CALCULATE({ratio}, '
+                 f'ALLEXCEPT({safe_table}, {keys}))')
+    else:
+        result = f'/* {note} */ {ratio}'
     try:
         from powerbi_import.dax_validator import validate_dax_expression
         if validate_dax_expression(result):
@@ -1200,9 +1438,11 @@ def _compile_approximate_fixed_aggregate_ratio(
 
 def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
                                      column_table_map, measure_names,
-                                     table_columns, is_calc_column, shelf,
-                                     calc_map=None, shelf_evidence='explicit'):
-    """Approximate a resolved shelf over distinct, physically bound FIXED keys."""
+                                     table_columns, numeric_columns,
+                                     is_calc_column, shelf,
+                                     calc_map=None, shelf_evidence='explicit',
+                                     row_approx_measure_names=()):
+    """Approximate a resolved shelf over known FIXED keys and numeric values."""
     from typing import cast
 
     iterators = {'SUM': 'SUMX', 'AVG': 'AVERAGEX', 'MIN': 'MINX', 'MAX': 'MAXX'}
@@ -1243,6 +1483,7 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
             text,
         )
         text = _resolve_references(text, calc_map or {}, {}, False, {})
+        text = _normalize_source_control_syntax(text)
         return _ungroup_source(_SourceExpressionParser(text).parse())
 
     try:
@@ -1261,26 +1502,61 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
     if (aggregate[1].upper() not in aggregates
             or len(aggregate[2]) != 1):
         return None
-    value = cast(tuple[object, ...], _ungroup_source(aggregate[2][0]))
-    if value[0] != 'ref':
-        return None
+    value = cast(tuple[Any, ...], _ungroup_source(aggregate[2][0]))
     dimensions = cast(list[tuple[str, str, str | None, str]], dimensions)
-    value = cast(tuple[str, str, str | None, str], value)
+    value_is_ref = value[0] == 'ref'
+    val_owner: str | None = None
+    val_name = ''
+    if value_is_ref:
+        value_ref = cast(tuple[str, str, str | None, str], value)
+        val_owner, val_name = value_ref[2], value_ref[3]
     names = [node[3] for node in dimensions]
     if len({name.casefold() for name in names}) != len(names):
         return None
     available = set(table_columns)
+    available_folded = {name.casefold() for name in available}
     measures = {name.casefold() for name in measure_names if isinstance(name, str)}
-
-    val_owner, val_name = value[2], value[3]
-    val_table = (
-        val_owner if val_owner is not None
-        else column_table_map.get(val_name, table_name)
-    )
-    if (val_name not in available and val_name not in column_table_map) or val_name.casefold() in measures:
-        return None
-    if val_table != table_name:
-        return None
+    row_approx_measures = {name.casefold() for name in row_approx_measure_names
+                           if isinstance(name, str)}
+    val_is_row_measure = False
+    val_is_row_expression = not value_is_ref
+    row_expression_dax = None
+    if value_is_ref:
+        val_is_row_measure = (
+            val_name.casefold() in measures
+            and val_name.casefold() in row_approx_measures
+            and val_name.casefold() not in available_folded
+            and val_name not in column_table_map
+        )
+        if val_is_row_measure:
+            if (aggregate[1].upper() != 'SUM'
+                    or (val_owner is not None and val_owner != table_name)):
+                return None
+        else:
+            val_table = (
+                val_owner if val_owner is not None
+                else column_table_map.get(val_name, table_name)
+            )
+            if ((val_name not in available and val_name not in column_table_map)
+                    or val_name.casefold() in measures):
+                return None
+            if val_table != table_name:
+                return None
+    else:
+        value_text = restore(match.group('value')).strip()
+        aggregate_argument = re.fullmatch(
+            r'\s*(?:SUM|AVG|AVERAGE|MIN|MAX)\s*\((.*)\)\s*',
+            value_text, re.IGNORECASE | re.DOTALL,
+        )
+        if aggregate_argument is None:
+            return None
+        row_expression_dax = _compile_numeric_row_aggregate(
+            aggregate[1], value, table_name=table_name,
+            table_columns=table_columns, numeric_columns=numeric_columns,
+            column_table_map=column_table_map, measure_names=measure_names,
+            source_text=aggregate_argument.group(1).strip())
+        if row_expression_dax is None:
+            return None
 
     table = "'" + table_name.replace("'", "''") + "'"
 
@@ -1309,14 +1585,27 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
             cross_table_dims.append(name)
         valid_keys.append(column(name, dim_table))
 
-    inner = aggregates[aggregate[1].upper()] + '(' + column(val_name) + ')'
+    if val_is_row_measure:
+        inner = '[' + val_name.replace(']', ']]') + ']'
+    elif not val_is_row_expression:
+        inner = aggregates[aggregate[1].upper()] + '(' + column(val_name) + ')'
+    else:
+        inner = row_expression_dax
     extra_warnings = []
     if cross_table_dims:
         extra_warnings.append(
-            f"cross-table dimension(s) {', '.join(cross_table_dims)}")
+            f"cross-table dimension(s) {', '.join(cross_table_dims)}; "
+            "relationship propagation unverified")
     if missing_dims:
         extra_warnings.append(
             f"missing schema dimension(s) {', '.join(missing_dims)} omitted")
+    if val_is_row_measure:
+        extra_warnings.append(
+            f"SUM over row-expression measure {val_name} unwrapped")
+    if val_is_row_expression:
+        extra_warnings.append(
+            f"{aggregate[1].upper()} numeric row expression lowered to "
+            f"{_NUMERIC_ROW_ITERATORS[aggregate[1].upper()]}")
     extra_suffix = ('; ' + '; '.join(extra_warnings)) if extra_warnings else ''
     if shelf_evidence == 'inferred':
         note = (f'shelf ({shelf.lower()}: inferred) approximation; aggregation '
@@ -1332,9 +1621,11 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
         expression = f'/* {note} */ CALCULATE({inner})'
     else:
         keys = ', '.join(valid_keys)
-        domain = (f'VALUES({keys})'
-                  if len(valid_keys) == 1 and not cross_table_dims
-                  else f'SUMMARIZE({table}, {keys})')
+        if cross_table_dims:
+            domain = f'SUMMARIZECOLUMNS({keys})'
+        else:
+            domain = (f'VALUES({keys})' if len(valid_keys) == 1
+                      else f'SUMMARIZE({table}, {keys})')
         expression = (
             f'/* {note} */ {iterators[shelf]}({domain}, CALCULATE({inner}))')
     try:
@@ -1349,7 +1640,7 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
 def _compile_context_lod(masked, restore, *, table_name, column_table_map,
                          measure_names, table_columns, numeric_columns,
                          is_calc_column, shelf):
-    """Compile a narrow same-table INCLUDE/EXCLUDE subset for model generation."""
+    """Compile bounded INCLUDE/EXCLUDE values with explicit grain warnings."""
     if (is_calc_column or not isinstance(table_name, str) or not table_name
             or not isinstance(table_columns, (list, tuple, set, frozenset))
             or not isinstance(numeric_columns, (list, tuple, set, frozenset))):
@@ -1378,13 +1669,19 @@ def _compile_context_lod(masked, restore, *, table_name, column_table_map,
             _ungroup_source(_SourceExpressionParser(restore(part)).parse())
             for part in dims_text.split(',') if part.strip()
         ]
-        body_text = restore(match.group('body')).strip()
+        body_text = _normalize_source_control_syntax(
+            restore(match.group('body')).strip()).strip()
         body = _ungroup_source(_SourceExpressionParser(body_text).parse())
     except (_SourceExpressionError, RecursionError):
         return None, f'{kind} requires a supported aggregate and physical dimension keys'
 
-    if (len(dimensions) > 32 or any(node[0] != 'ref' for node in dimensions)
-            or body[0] != 'call' or len(body[2]) != 1):
+    if len(dimensions) > 32 or any(node[0] != 'ref' for node in dimensions):
+        return None, f'{kind} requires a supported single-column or row-expression aggregate'
+    if not isinstance(body, tuple) or len(body) != 3 or body[0] != 'call':
+        return None, f'{kind} requires a supported single-column or row-expression aggregate'
+    dimensions = cast(list[tuple[str, str, str | None, str]], dimensions)
+    body = cast(tuple[str, str, tuple[tuple[Any, ...], ...]], body)
+    if len(body[2]) != 1:
         return None, f'{kind} requires a supported single-column or row-expression aggregate'
 
     aggregate_names = {
@@ -1411,10 +1708,32 @@ def _compile_context_lod(masked, restore, *, table_name, column_table_map,
             return None
         return name
 
-    dimension_names = [local_physical_column(node) for node in dimensions]
-    if (any(name is None for name in dimension_names)
-            or len({name.casefold() for name in dimension_names}) != len(dimension_names)):
-        return None, f'{kind} dimension keys must be distinct physical columns in one table'
+    source_dimension_names = [node[3] for node in dimensions]
+    if len({name.casefold() for name in source_dimension_names}) != len(source_dimension_names):
+        return None, f'{kind} dimension keys must be distinct physical columns'
+
+    dimension_refs = []
+    cross_table_dims = []
+    missing_dims = []
+    known_tables = set(column_table_map.values())
+    for node in dimensions:
+        owner, name = node[2], node[3]
+        if name.casefold() in measures and name not in available:
+            return None, f'{kind} dimension keys cannot be measures'
+        mapped_owner = column_table_map.get(name)
+        dimension_table = owner or mapped_owner
+        if dimension_table is None and name in available:
+            dimension_table = table_name
+        if (dimension_table is None
+                or (dimension_table == table_name and name not in available)):
+            missing_dims.append(name)
+            continue
+        if dimension_table != table_name:
+            if dimension_table not in known_tables:
+                missing_dims.append(name)
+                continue
+            cross_table_dims.append(name)
+        dimension_refs.append((dimension_table, name))
 
     value = _ungroup_source(body[2][0])
     value_refs = [node for node in _source_walk(value) if node[0] == 'ref']
@@ -1422,67 +1741,54 @@ def _compile_context_lod(masked, restore, *, table_name, column_table_map,
                    for node in value_refs]
     if not value_refs or any(name is None for name in value_names):
         return None, f'{kind} aggregate needs numeric physical columns in the same table'
-    if any(node[0] == 'call' for node in _source_walk(value)):
-        return None, f'{kind} nested row functions require separate grain evidence'
 
     def numeric_scalar(node):
-        node = _ungroup_source(node)
-        if node[0] == 'ref':
-            return local_physical_column(node, require_numeric=True) is not None
-        if node[0] == 'atom':
-            return re.fullmatch(
-                r'(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?', node[1]) is not None
-        if node[0] == 'group':
-            return numeric_scalar(node[1])
-        if node[0] == 'unary':
-            return node[1] in ('+', '-') and numeric_scalar(node[2])
-        return (node[0] == 'op' and node[1] in ('+', '-', '*', '/', '^')
-                and numeric_scalar(node[2]) and numeric_scalar(node[3]))
+        return _is_numeric_scalar_source(
+            node, lambda reference: local_physical_column(
+                reference, require_numeric=True) is not None)
 
     if not numeric_scalar(value):
         return None, f'{kind} row aggregate only supports numeric scalar expressions'
 
     safe_table = "'" + table_name.replace("'", "''") + "'"
 
-    def column(name):
-        return safe_table + '[' + name.replace(']', ']]') + ']'
+    def column(name, owner=table_name):
+        table_ref = "'" + owner.replace("'", "''") + "'"
+        return table_ref + '[' + name.replace(']', ']]') + ']'
 
     if value[0] == 'ref':
         inner = f'{inner_name}({column(value_names[0])})'
     else:
-        row_iterators = {
-            'SUM': 'SUMX', 'AVERAGE': 'AVERAGEX', 'MIN': 'MINX', 'MAX': 'MAXX',
-        }
         value_text = re.fullmatch(
             r'\s*(?:SUM|AVG|AVERAGE|MIN|MAX)\s*\((.*)\)\s*',
             body_text, re.IGNORECASE | re.DOTALL)
         if not value_text:
             return None, f'{kind} aggregate body is not a supported row expression'
-        def qualify_row_refs(node):
-            if node[0] == 'ref':
-                name = local_physical_column(node, require_numeric=True)
-                return ('ref', column(name), node[2], node[3])
-            if node[0] == 'op':
-                return (node[0], node[1], qualify_row_refs(node[2]),
-                        qualify_row_refs(node[3]))
-            if node[0] == 'unary':
-                return (node[0], node[1], qualify_row_refs(node[2]))
-            if node[0] == 'group':
-                return (node[0], qualify_row_refs(node[1]))
-            return node
+        inner = _compile_numeric_row_aggregate(
+            inner_name, value, table_name=table_name,
+            table_columns=table_columns, numeric_columns=numeric_columns,
+            column_table_map=column_table_map, measure_names=measure_names,
+            source_text=value_text.group(1).strip())
+        if inner is None:
+            return None, f'{kind} row expression requires proven numeric local columns'
 
-        scalar = _render_nullable_source(qualify_row_refs(value),
-                                        value_text.group(1).strip(),
-                                        'number', True)
-        inner = f'{row_iterators[inner_name]}({safe_table}, {scalar})'
-
-    dimension_refs = [column(name) for name in dimension_names]
+    dimension_columns = [column(name, owner) for owner, name in dimension_refs]
+    warnings = []
+    if cross_table_dims:
+        warnings.append(
+            f"cross-table dimension(s) {', '.join(cross_table_dims)} retained; "
+            "relationship propagation unverified")
+    if missing_dims:
+        warnings.append(f"missing schema dimension(s) {', '.join(missing_dims)} omitted")
+    warning_suffix = ('; ' + '; '.join(warnings)) if warnings else ''
     if kind == 'EXCLUDE':
-        if not dimension_refs:
-            return inner, ''
-        expression = (
-            '/* EXCLUDE dimension-filter approximation; totals unverified */ '
-            f'CALCULATE({inner}, REMOVEFILTERS({", ".join(dimension_refs)}))')
+        note = 'EXCLUDE dimension-filter approximation; totals unverified'
+        if dimension_columns:
+            expression = (
+                f'/* {note}{warning_suffix} */ '
+                f'CALCULATE({inner}, REMOVEFILTERS({", ".join(dimension_columns)}))')
+        else:
+            expression = f'/* {note}{warning_suffix} */ CALCULATE({inner})'
         return expression, ''
 
     shelf_name = shelf.strip().upper() if isinstance(shelf, str) else ''
@@ -1495,11 +1801,18 @@ def _compile_context_lod(masked, restore, *, table_name, column_table_map,
     }
     if shelf_name not in shelf_iterators:
         return None, 'INCLUDE requires explicit consistent SUM/AVG/MIN/MAX shelf evidence'
-    domain = (f'VALUES({dimension_refs[0]})' if len(dimension_refs) == 1
-              else f'SUMMARIZE({safe_table}, {", ".join(dimension_refs)})')
+    note = (f'shelf ({shelf_name.lower()}:) INCLUDE approximation; source filters and '
+            f'totals unverified{warning_suffix}')
+    if not dimension_columns:
+        return f'/* {note} */ {inner}', ''
+    if cross_table_dims:
+        domain = f'SUMMARIZECOLUMNS({", ".join(dimension_columns)})'
+    else:
+        domain = (f'VALUES({dimension_columns[0]})'
+                  if len(dimension_columns) == 1
+                  else f'SUMMARIZE({safe_table}, {", ".join(dimension_columns)})')
     expression = (
-        f'/* shelf ({shelf_name.lower()}:) INCLUDE approximation; source filters and '
-        f'totals unverified */ {shelf_iterators[shelf_name]}({domain}, '
+        f'/* {note} */ {shelf_iterators[shelf_name]}({domain}, '
         f'CALCULATE({inner}))')
     return expression, ''
 
@@ -1788,16 +2101,19 @@ def _check_source_grain(root, table_name, column_table_map, measure_names,
     return None, force_nullable_arithmetic
 
 
-def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
+def _render_nullable_source(root, text, calc_datatype, force_arithmetic,
+                            force_render=False, null_numeric_functions=False):
     """Lower Tableau nullable booleans without DAX BLANK coercion."""
     nodes = list(_source_walk(root))
     needs_logic = any(
         (node[0] == 'op' and node[1] in _SOURCE_COMPARISONS | _SOURCE_BOOLEAN)
         or (node[0] == 'unary' and node[1] == 'NOT')
         or (node[0] == 'call' and node[1].upper() in ('IIF', 'AND', 'OR', 'NOT'))
+        or (null_numeric_functions and node[0] == 'call'
+            and node[1].upper() in _NUMERIC_SCALAR_SOURCE_ARITIES)
         for node in nodes
     )
-    if not needs_logic and not force_arithmetic:
+    if not needs_logic and not force_arithmetic and not force_render:
         return text
 
     # The converter has no operand types with which to distinguish a numeric
@@ -1818,6 +2134,10 @@ def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
         'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND', 'WEEKNUM',
         'WEEKDAY', 'EDATE', 'LEN',
     }
+    if null_numeric_functions:
+        safe_comparison_calls = (
+            safe_comparison_calls | set(_NUMERIC_SCALAR_SOURCE_ARITIES)
+        )
     for node in nodes:
         if (node[0] == 'call' and node[1].upper() in ('USERNAME', 'FULLNAME')
                 and node[2]):
@@ -1984,6 +2304,17 @@ def _render_nullable_source(root, text, calc_datatype, force_arithmetic):
             return render(('op', upper, args[0], args[1]))
         if upper == 'NOT' and len(args) == 1:
             return render(('unary', 'NOT', args[0]))
+        if (null_numeric_functions
+                and upper in _NUMERIC_SCALAR_SOURCE_ARITIES
+                and len(args) in _NUMERIC_SCALAR_SOURCE_ARITIES[upper]):
+            rendered_args = [render(arg) for arg in args]
+            names = [variable() for _ in rendered_args]
+            bindings = ' '.join(
+                f'VAR {var} = {value}' for var, value in zip(names, rendered_args))
+            nulls = ' || '.join(f'ISBLANK({var})' for var in names)
+            call_args = names + (['0'] if upper == 'ROUND' and len(names) == 1 else [])
+            call = f'{upper}({", ".join(call_args)})'
+            return f'({bindings} RETURN IF({nulls}, BLANK(), {call}))'
         if upper in null_propagating_string_calls and args:
             rendered_args = [render(arg) for arg in args]
             names = [variable() for _ in rendered_args]
@@ -2001,7 +2332,8 @@ def _prepare_source_expression(text, *, table_name, column_table_map,
                                measure_names, is_calc_column, table_columns,
                                calc_datatype, verified_row_scope,
                                date_columns=None, numeric_columns=None,
-                               nonphysical_names=(), _row_approx_out=None):
+                               nonphysical_names=(), row_approx_measure_names=(),
+                               _row_approx_out=None):
     """Fail closed on unknown row grain; otherwise preserve nullable logic."""
     try:
         root = _SourceExpressionParser(text).parse()
@@ -2056,6 +2388,37 @@ def _prepare_source_expression(text, *, table_name, column_table_map,
             return node
 
         root = lower_scalar_extrema(root)
+        row_approx_names = {
+            name.casefold() for name in row_approx_measure_names
+            if isinstance(name, str) and name
+        }
+        unwrapped_row_measures = set()
+
+        def unwrap_row_measure_sum(node):
+            if node[0] == 'call':
+                if node[1].upper() == 'SUM' and len(node[2]) == 1:
+                    reference = _ungroup_source(node[2][0])
+                    if reference[0] == 'ref':
+                        owner, name = reference[2:]
+                        if (name.casefold() in row_approx_names
+                                and (owner is None or owner == table_name)):
+                            unwrapped_row_measures.add(name)
+                            return reference
+                return ('call', node[1], tuple(
+                    unwrap_row_measure_sum(argument) for argument in node[2]))
+            if node[0] == 'op':
+                return (node[0], node[1], unwrap_row_measure_sum(node[2]),
+                        unwrap_row_measure_sum(node[3]))
+            if node[0] == 'group':
+                return ('group', unwrap_row_measure_sum(node[1]))
+            if node[0] == 'unary':
+                return (node[0], node[1], unwrap_row_measure_sum(node[2]))
+            return node
+
+        root = unwrap_row_measure_sum(root)
+        if unwrapped_row_measures and isinstance(_row_approx_out, dict):
+            _row_approx_out['row_measure_sum_unwrapped'] = sorted(
+                unwrapped_row_measures, key=str.casefold)
         issue, force_arithmetic = _check_source_grain(
             root, table_name, column_table_map, measure_names,
             is_calc_column, table_columns, verified_row_scope)
@@ -2072,7 +2435,8 @@ def _prepare_source_expression(text, *, table_name, column_table_map,
             return text, issue
         return _render_nullable_source(
             root, text, calc_datatype,
-            force_arithmetic or scalar_extrema_rewritten), None
+            force_arithmetic or scalar_extrema_rewritten,
+            force_render=bool(unwrapped_row_measures)), None
     except (_SourceExpressionError, RecursionError):
         masked, _ = _protect_source_tokens(text)
         if (table_columns is None
@@ -2296,6 +2660,33 @@ def _normalize_tableau_quote_escapes(text):
         )
 
     return _RE_NULL_PROTECTED_TOKEN.sub(normalize, text)
+
+
+def _normalize_tableau_group_references(text):
+    """Normalize Tableau's split-bracket group field spelling."""
+    pattern = re.compile(
+        r'"(?:[^"\\]|\\.|"")*"|'
+        r"'(?:[^'\\]|\\.|'')*'|"
+        r'(?P<group>\[(?:[^\]]|\]\])+\]\s*\((?:group|groupe)\)\])',
+        re.IGNORECASE,
+    )
+
+    def normalize(match):
+        token = match.group('group')
+        if token is None:
+            return match.group(0)
+        parts = re.fullmatch(
+            r'(?P<base>\[(?:[^\]]|\]\])+\])\s*\('
+            r'(?P<suffix>group|groupe)\)\]',
+            token, re.IGNORECASE,
+        )
+        if parts is None:
+            return token
+        field = parts.group('base')[1:-1].replace(']]', ']')
+        suffix = parts.group('suffix')
+        return '[' + field + ' (' + suffix + ')]'
+
+    return pattern.sub(normalize, text)
 
 
 def _strip_tableau_comments(text, *, keep_block_comments=False,

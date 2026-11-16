@@ -582,6 +582,32 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
         self.assertIn("CALCULATE(SUMX('Fact',", expression)
         self.assertEqual(validate_dax_expression(expression), [])
 
+    def test_include_lowers_whitelisted_numeric_scalar_functions(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        expressions = (
+            ("ABS([Sales])", "ABS("),
+            ("ROUND([Sales])", "ROUND("),
+            ("POWER([Sales], 2)", "POWER("),
+            ("MIN([Sales], [UnitPrice])", "MIN("),
+            ("IF [Sales] > 0 THEN ABS([Sales]) ELSE 0 END", "ABS("),
+        )
+        for row_expression, expected in expressions:
+            with self.subTest(row_expression=row_expression):
+                expression = convert_tableau_formula_to_dax(
+                    f"{{ INCLUDE [Region] : SUM({row_expression}) }}",
+                    table_name="Fact",
+                    table_columns={"Region", "Sales", "UnitPrice"},
+                    numeric_columns={"Sales", "UnitPrice"},
+                    column_table_map={
+                        "Region": "Fact", "Sales": "Fact", "UnitPrice": "Fact"},
+                    lod_shelf_aggregation="SUM", validate_output=True,
+                )
+                self.assertIn("INCLUDE approximation", expression)
+                self.assertIn("SUMX('Fact'", expression)
+                self.assertIn(expected, expression)
+                self.assertEqual(validate_dax_expression(expression), [])
+
     def test_include_preserves_every_physical_key(self):
         expression = convert_tableau_formula_to_dax(
             "{ INCLUDE [Region], [Category] : SUM([Sales]) }",
@@ -623,6 +649,52 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
             "/* EXCLUDE dimension-filter approximation; totals unverified */ "
             "CALCULATE(SUM('Fact'[Sales]), REMOVEFILTERS('Fact'[Region]))")
 
+    def test_include_omits_missing_and_cross_table_dimensions_with_warning(self):
+        missing = convert_tableau_formula_to_dax(
+            "{ INCLUDE [MissingRegion] : SUM([Sales]) }",
+            table_name="Fact", table_columns={"Sales"},
+            numeric_columns={"Sales"}, column_table_map={"Sales": "Fact"},
+            lod_shelf_aggregation="SUM",
+        )
+        self.assertIn("missing schema dimension(s) MissingRegion omitted", missing)
+        self.assertIn("SUM('Fact'[Sales])", missing)
+        self.assertNotIn("TODO", missing)
+
+        cross_table = convert_tableau_formula_to_dax(
+            "{ INCLUDE [Region] : SUM([Sales]) }",
+            table_name="Fact", table_columns={"Sales"},
+            numeric_columns={"Sales"},
+            column_table_map={"Sales": "Fact", "Region": "DimRegion"},
+            lod_shelf_aggregation="SUM",
+        )
+        self.assertIn("cross-table dimension(s) Region retained", cross_table)
+        self.assertIn("relationship propagation unverified", cross_table)
+        self.assertIn(
+            "SUMX(SUMMARIZECOLUMNS('DimRegion'[Region]), "
+            "CALCULATE(SUM('Fact'[Sales])))",
+            cross_table,
+        )
+        self.assertNotIn("TODO", cross_table)
+
+    def test_exclude_retains_known_foreign_dimension_and_warns_on_missing(self):
+        cross_table = convert_tableau_formula_to_dax(
+            "{ EXCLUDE [Region] : SUM([Sales]) }",
+            table_name="Fact", table_columns={"Sales"},
+            numeric_columns={"Sales"},
+            column_table_map={"Sales": "Fact", "Region": "DimRegion"},
+        )
+        self.assertIn("cross-table dimension(s) Region retained", cross_table)
+        self.assertIn("REMOVEFILTERS('DimRegion'[Region])", cross_table)
+
+        missing = convert_tableau_formula_to_dax(
+            "{ EXCLUDE [MissingRegion] : SUM([Sales]) }",
+            table_name="Fact", table_columns={"Sales"},
+            numeric_columns={"Sales"}, column_table_map={"Sales": "Fact"},
+        )
+        self.assertIn("missing schema dimension(s) MissingRegion omitted", missing)
+        self.assertIn("CALCULATE(SUM('Fact'[Sales]))", missing)
+        self.assertNotIn("TODO", missing)
+
     def test_include_exclude_fail_closed_without_proven_grain(self):
         cases = (
             ("{ INCLUDE [Region] : SUM([Sales]) }", {
@@ -631,12 +703,7 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
                 "lod_shelf_aggregation": "AVG"}),
             ("{ INCLUDE [Region] : SUM([Sales]) }", {
                 "lod_shelf_aggregation": "SUM", "numeric_columns": {"Region"}}),
-            ("{ INCLUDE [Region] : SUM([Sales]) }", {
-                "lod_shelf_aggregation": "SUM",
-                "column_table_map": {"Region": "Other", "Sales": "Fact"}}),
             ("{ INCLUDE [Region], [Region] : SUM([Sales]) }", {}),
-            ("{ EXCLUDE [Region] : SUM([Sales]) }", {
-                "column_table_map": {"Region": "Other", "Sales": "Fact"}}),
             ("SUM({ EXCLUDE [Region] : SUM([Sales]) })", {}),
         )
         for formula, overrides in cases:
@@ -754,7 +821,11 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
             fixed_shelf_aggregation="SUM",
         )
         self.assertIn("cross-table dimension(s) Sector", cross)
-        self.assertIn("SUMX(SUMMARIZE('Housing', 'OtherHousing'[Sector]),", cross)
+        self.assertIn("relationship propagation unverified", cross)
+        self.assertIn(
+            "SUMX(SUMMARIZECOLUMNS('OtherHousing'[Sector]),",
+            cross,
+        )
         self.assertNotIn("BLANK()", cross)
 
     def test_fixed_ratio_of_local_aggregates_gets_warned_approximation(self):
@@ -770,6 +841,169 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
         self.assertIn("ALLEXCEPT('Housing', 'Housing'[Sector])", expression)
         self.assertNotIn("TODO", expression)
         self.assertNotIn("BLANK()", expression)
+
+    def test_fixed_ratio_approximates_missing_and_cross_table_dimensions(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector], [Unknown] : "
+            "SUM([Logements double]) / SUM([Conso]) }",
+            table_name="Housing", table_columns=["Conso"],
+            column_table_map={"Sector": "OtherHousing", "Conso": "Housing"},
+            measure_names={"Logements double"},
+            fixed_shelf_aggregation="SUM",
+            row_approx_measure_names={"Logements double"},
+        )
+        self.assertIn("cross-table dimension(s) Sector", expression)
+        self.assertIn("relationship propagation unverified", expression)
+        self.assertIn("missing schema dimension(s) Unknown omitted", expression)
+        self.assertIn(
+            "SUM over row-expression measure(s) Logements double unwrapped", expression)
+        self.assertIn(
+            "SUMX(SUMMARIZECOLUMNS('OtherHousing'[Sector]), "
+            "CALCULATE(DIVIDE([Logements double], SUM('Housing'[Conso])))",
+            expression,
+        )
+        self.assertNotIn("TODO", expression)
+        self.assertNotIn("BLANK()", expression)
+
+        unsupported = convert_tableau_formula_to_dax(
+            "{ FIXED [Unknown] : AVG([Logements double]) / SUM([Conso]) }",
+            table_name="Housing", table_columns=["Conso"],
+            measure_names={"Logements double"},
+            fixed_shelf_aggregation="SUM",
+        )
+        _assert_unsupported(self, unsupported, "FIXED")
+
+        unproved_cross_table_shelf = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : SUM([Conso]) / SUM([Conso]) }",
+            table_name="Housing", table_columns=["Conso"],
+            column_table_map={"Sector": "OtherHousing", "Conso": "Housing"},
+        )
+        _assert_unsupported(self, unproved_cross_table_shelf, "FIXED")
+
+    def test_fixed_ratio_with_outer_sum_uses_resolved_shelf_over_fixed_keys(self):
+        expression = convert_tableau_formula_to_dax(
+            "SUM({ FIXED [Sector] : "
+            "SUM([Logements double]) / SUM([Conso]) })",
+            table_name="Housing", table_columns=["Sector", "Conso"],
+            column_table_map={"Sector": "Housing", "Conso": "Housing"},
+            measure_names={"Logements double"},
+            fixed_shelf_aggregation="SUM", validate_output=True,
+            row_approx_measure_names={"Logements double"},
+        )
+        self.assertIn("FIXED best-effort approximation", expression)
+        self.assertIn(
+            "SUMX(VALUES('Housing'[Sector]), "
+            "CALCULATE(DIVIDE([Logements double], SUM('Housing'[Conso])))",
+            expression,
+        )
+        self.assertNotIn("TODO", expression)
+        self.assertNotIn("BLANK()", expression)
+
+    def test_fixed_shelf_unwraps_only_a_known_row_expression_measure(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : SUM([Logements double]) }",
+            table_name="Housing", table_columns=["Sector"],
+            column_table_map={"Sector": "Housing"},
+            measure_names={"Logements double"},
+            fixed_shelf_aggregation="SUM",
+            row_approx_measure_names={"Logements double"},
+        )
+        self.assertIn(
+            "SUM over row-expression measure Logements double unwrapped", expression)
+        self.assertIn(
+            "SUMX(VALUES('Housing'[Sector]), CALCULATE([Logements double]))",
+            expression,
+        )
+        self.assertNotIn("TODO", expression)
+
+        ordinary_measure = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : SUM([OrdinaryMeasure]) }",
+            table_name="Housing", table_columns=["Sector"],
+            column_table_map={"Sector": "Housing"},
+            measure_names={"OrdinaryMeasure"},
+            fixed_shelf_aggregation="SUM",
+        )
+        _assert_unsupported(self, ordinary_measure, "FIXED")
+
+    def test_fixed_shelf_lowers_numeric_row_expression_and_scalar_function(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        expression = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : SUM(ABS([Sales]) * [UnitPrice]) }",
+            table_name="Fact",
+            table_columns={"Sector", "Sales", "UnitPrice"},
+            numeric_columns={"Sales", "UnitPrice"},
+            column_table_map={
+                "Sector": "Fact", "Sales": "Fact", "UnitPrice": "Fact"},
+            fixed_shelf_aggregation="SUM", validate_output=True,
+        )
+        self.assertIn("numeric row expression lowered to SUMX", expression)
+        self.assertIn("SUMX(VALUES('Fact'[Sector])", expression)
+        self.assertIn("SUMX('Fact'", expression)
+        self.assertIn("ABS(", expression)
+        self.assertEqual(validate_dax_expression(expression), [])
+
+        unsupported = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : SUM(UNKNOWN([Sales]) * [UnitPrice]) }",
+            table_name="Fact",
+            table_columns={"Sector", "Sales", "UnitPrice"},
+            numeric_columns={"Sales", "UnitPrice"},
+            column_table_map={
+                "Sector": "Fact", "Sales": "Fact", "UnitPrice": "Fact"},
+            fixed_shelf_aggregation="SUM",
+        )
+        _assert_unsupported(self, unsupported, "FIXED")
+
+    def test_fixed_ratio_lowers_proven_numeric_row_expression_operands(self):
+        from powerbi_import.dax_validator import validate_dax_expression
+
+        expression = convert_tableau_formula_to_dax(
+            "SUM({ FIXED [Sector] : "
+            "SUM(ABS([Sales]) * [UnitPrice]) / SUM([Units]) })",
+            table_name="Fact",
+            table_columns={"Sector", "Sales", "UnitPrice", "Units"},
+            numeric_columns={"Sales", "UnitPrice", "Units"},
+            column_table_map={
+                "Sector": "Fact", "Sales": "Fact", "UnitPrice": "Fact",
+                "Units": "Fact"},
+            fixed_shelf_aggregation="SUM", validate_output=True,
+        )
+        self.assertIn("numeric row-expression operand(s) lowered via SUMX", expression)
+        self.assertIn("SUMX(VALUES('Fact'[Sector])", expression)
+        self.assertIn("DIVIDE(SUMX('Fact'", expression)
+        self.assertIn("ABS(", expression)
+        self.assertEqual(validate_dax_expression(expression), [])
+
+        unsupported = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : "
+            "SUM(UNKNOWN([Sales]) * [UnitPrice]) / SUM([Units]) }",
+            table_name="Fact",
+            table_columns={"Sector", "Sales", "UnitPrice", "Units"},
+            numeric_columns={"Sales", "UnitPrice", "Units"},
+            column_table_map={
+                "Sector": "Fact", "Sales": "Fact", "UnitPrice": "Fact",
+                "Units": "Fact"},
+            fixed_shelf_aggregation="SUM",
+        )
+        _assert_unsupported(self, unsupported, "FIXED")
+
+    def test_fixed_group_reference_with_split_brackets_is_normalized(self):
+        expression = convert_tableau_formula_to_dax(
+            "SUM({ FIXED [Champ] (groupe)] : "
+            "SUM([Sales]) / SUM([Units]) })",
+            table_name="Fact",
+            table_columns={"Champ (groupe)", "Sales", "Units"},
+            column_table_map={
+                "Champ (groupe)": "Fact", "Sales": "Fact", "Units": "Fact"},
+            fixed_shelf_aggregation="SUM", validate_output=True,
+        )
+        self.assertIn("VALUES('Fact'[Champ (groupe)])", expression)
+        self.assertIn("DIVIDE(SUM('Fact'[Sales]), SUM('Fact'[Units]))", expression)
+        self.assertNotIn("TODO", expression)
+
+        literal = convert_tableau_formula_to_dax(
+            '"[Champ] (groupe)]"', table_name="Fact", validate_output=True)
+        self.assertEqual(literal, '"[Champ] (groupe)]"')
 
     def test_fixed_unresolved_original_foreign_qualification_is_not_local(self):
         expression = convert_tableau_formula_to_dax(
@@ -2703,6 +2937,7 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                 expression = self._fixed_declaration(control)
                 self.assertNotIn("TODO:", expression)
                 self.assertIn("SUMX(", expression)
+
                 self.assertEqual("approximation" in expression, mode == "approximation")
                 canonical = datasource["calculations"][0]
                 canonical["_source_declaration_conflicts"] = [dict(
@@ -3817,11 +4052,18 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                 {"name": "Secteur", "datatype": "string"},
                 {"name": "Logements", "datatype": "real"},
                 {"name": "Facture", "datatype": "real"},
+                {"name": "Conso", "datatype": "real"},
             ],
         }
         calculations = [
             {"name": "EstAuDessus", "caption": "EstAuDessus",
              "formula": TestReportedRowGrain._row_formula,
+             "role": "measure", "datatype": "real"},
+            {"name": "FixedFromRowApprox", "caption": "FixedFromRowApprox",
+             "formula": "{ FIXED [Secteur] : SUM([EstAuDessus]) }",
+             "role": "measure", "datatype": "real"},
+            {"name": "PartLogements", "caption": "Part logements",
+             "formula": "SUM([EstAuDessus]) / SUM([Conso])",
              "role": "measure", "datatype": "real"},
             {"name": "FixedHousing", "caption": "FixedHousing",
              "formula": "{ FIXED [Secteur] : MIN([Logements]) }",
@@ -3834,6 +4076,7 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
         context = {
             "calc_map": {}, "param_map": {}, "column_table_map": dict(_COLUMN_OWNERS),
             "measure_names": set(), "param_values": {},
+            "fixed_shelf_aggregations": {id(calculations[1]): "SUM"},
         }
         result = _build_table(
             table, {"type": "sqlserver", "server": "synthetic.invalid",
@@ -3844,6 +4087,34 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
         self.assertIn("Unaggregated row expression best-effort approximation",
                       measures["EstAuDessus"])
         self.assertIn("SUMX('Zone'", measures["EstAuDessus"])
+        self.assertIn(
+            "SUM over row-expression measure EstAuDessus unwrapped",
+            measures["FixedFromRowApprox"],
+        )
+        self.assertIn(
+            "SUMX(VALUES('Zone'[Secteur]), CALCULATE([EstAuDessus]))",
+            measures["FixedFromRowApprox"],
+        )
+        self.assertNotIn("TODO", measures["FixedFromRowApprox"])
+        self.assertFalse(measures["FixedFromRowApprox"].rstrip().endswith("BLANK()"))
+        self.assertIn("Row-measure aggregation best-effort approximation",
+                      measures["Part logements"])
+        self.assertIn("[EstAuDessus]", measures["Part logements"])
+        self.assertIn("SUM('Zone'[Conso])", measures["Part logements"])
+        self.assertNotRegex(
+            measures["Part logements"], r"(?i)\bSUM\s*\(\s*\[EstAuDessus\]\s*\)"
+        )
+        self.assertNotIn("TODO", measures["Part logements"])
+        self.assertFalse(measures["Part logements"].rstrip().endswith("BLANK()"))
+        part_measure = next(
+            measure for measure in result["measures"]
+            if measure["name"] == "Part logements")
+        self.assertTrue(any(
+            annotation.get("name") == "MigrationNote"
+            and "Row-measure aggregation best-effort approximation"
+            in annotation.get("value", "")
+            for annotation in part_measure.get("annotations", [])
+        ))
         _assert_unsupported(self, measures["FixedHousing"], "FIXED", "grain")
         _assert_unsupported(self, measures["TotalHousing"], "aggregation", "grain")
         self.assertEqual(measures["Derived"], "[EstAuDessus] + 1")
