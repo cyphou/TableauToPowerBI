@@ -967,7 +967,7 @@ class TestReportedPhysicalJoins(unittest.TestCase):
         self.assertTrue(visuals)
         for path in visuals:
             visual = json.loads(path.read_text(encoding="utf-8"))["visual"]
-            self.assertEqual(visual["visualType"], "textbox")
+            self.assertIn(visual["visualType"], ("textbox", "image"))
             self.assertNotIn("query", visual)
         openability = check_openability(str(project))
         self.assertTrue(openability.openable, openability.blocking_issues)

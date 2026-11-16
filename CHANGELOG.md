@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- Adopt the requested best-effort formula policy for recoverable uncertainty:
+  exact DAX remains preferred; otherwise emit a plausible approximation with
+  a visible DAX warning and TMDL `MigrationNote` instead of silently blanking a
+  measure. `RUNNING_*` now emits a visible-row aggregate approximation explicitly
+  marked as non-cumulative; FIXED accepts inferred shelves, same-table numeric
+  row-calculated values, and direct same-datasource consumers, with majority/SUM
+  tie-breaking warnings. Static tests do not establish native value parity.
+- Preserve plausible output for FIXED ratios, DATEDIFF week and SPLIT separator
+  collisions, with explicit warnings; undefined ratio denominators and true null
+  inputs still retain their native blank behavior.
 - Add the embedded project logo and a clearer visual hierarchy to newly
   generated PBIR Migration Summary pages, including thin and partial reports.
   Missing logo files do not block project generation; native Desktop rendering
@@ -17,8 +27,8 @@
   formats, and diagnose ambiguous, unsupported or missing formats instead of
   relying on the model locale through `DATEVALUE`.
 - Reorder `DATEDIFF` only for supported literal intervals; diagnose unknown,
-  dynamic and incomplete calls, and keep `WEEK` diagnostic until week-start
-  semantics are verified.
+  dynamic and incomplete calls. `WEEK` uses a warned 7-day approximation with
+  week-start and extra-argument semantics unverified.
 - Diagnose invalid Tableau `DATE`/`DATETIME` cast arities instead of emitting
   malformed DAX; preserve the valid three-argument DAX `DATE` constructor.
 - Preserve quoted strings and identifiers during simple Tableau function-name

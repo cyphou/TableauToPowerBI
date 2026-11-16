@@ -262,7 +262,7 @@ class TestDatediffFallback(unittest.TestCase):
 
     def test_datediff_2_args_fallback(self):
         result = _convert_datediff("DATEDIFF([A], [B])")
-        self.assertIn('DATEDIFF requires exactly three arguments', result)
+        self.assertIn('DATEDIFF requires at least three arguments', result)
         self.assertNotIn('DATEDIFF(', result)
 
 
@@ -1147,28 +1147,31 @@ class TestRunningAndTotal(unittest.TestCase):
 
     def test_running_count(self):
         result = _convert_running_functions('RUNNING_COUNT(COUNT([ID]))', 'T')
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn('CALCULATE', result)
+        self.assertIn("ALLSELECTED('T')", result)
+        self.assertNotIn('BLANK()', result)
 
     def test_running_max(self):
         result = _convert_running_functions('RUNNING_MAX(MAX([Val]))', 'T')
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn('CALCULATE', result)
+        self.assertIn("ALLSELECTED('T')", result)
+        self.assertNotIn('BLANK()', result)
 
     def test_running_min(self):
         result = _convert_running_functions('RUNNING_MIN(MIN([Val]))', 'T')
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn('CALCULATE', result)
+        self.assertIn("ALLSELECTED('T')", result)
+        self.assertNotIn('BLANK()', result)
 
-    def test_running_sum_without_ordering_is_diagnostic(self):
+    def test_running_sum_without_ordering_is_annotated_approximation(self):
         result = _convert_running_functions('RUNNING_SUM(SUM([Sales]))', 'Fact')
-        self.assertIn('TODO', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
-        self.assertNotIn('ALLSELECTED', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn('CALCULATE', result)
+        self.assertIn("ALLSELECTED('Fact')", result)
+        self.assertNotIn('BLANK()', result)
         self.assertNotIn('__SortColumn__', result)
 
     def test_total_function(self):
@@ -1626,27 +1629,27 @@ class TestMultiPhaseInteractions(unittest.TestCase):
         self.assertIn('CALCULATE', result)
 
     def test_running_count_via_main(self):
-        # The main converter fails closed when ordering and partition context are unresolved.
+        # The main converter keeps a warned approximation when context is unresolved.
         result = convert_tableau_formula_to_dax(
             'RUNNING_COUNT(COUNT([ID]))',
             table_name='T',
             column_table_map={'ID': 'T'}
         )
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn("ALLSELECTED('T')", result)
+        self.assertNotIn('BLANK()', result)
 
-    def test_running_sum_partition_without_ordering_is_diagnostic_via_main(self):
+    def test_running_sum_partition_without_ordering_is_annotated_via_main(self):
         result = convert_tableau_formula_to_dax(
             'RUNNING_SUM(SUM([Sales]))',
             table_name='Fact',
             compute_using=['Region'],
             column_table_map={'Region': 'Fact', 'Sales': 'Fact'}
         )
-        self.assertIn('TODO', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
-        self.assertNotIn('ALLSELECTED', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn('partition', result)
+        self.assertIn("ALLSELECTED('Fact')", result)
+        self.assertNotIn('BLANK()', result)
         self.assertNotIn('__SortColumn__', result)
 
     def test_rank_dense_via_main(self):

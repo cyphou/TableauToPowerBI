@@ -70,6 +70,9 @@ _PROTECT_RESTORE_ALLOWLIST = {
     #   * (?m)^\s*//... line comments (anchored at line start)
     # Both run before string literals are introduced; allow-listed here.
     ('tableau_export/dax_converter.py', 'convert_tableau_formula_to_dax'),
+    # _convert_proper: final re.sub only restores comment placeholders
+    # that were substituted in before the transform.
+    ('tableau_export/dax_converter.py', '_convert_proper'),
 }
 
 

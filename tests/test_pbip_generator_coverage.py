@@ -5109,7 +5109,14 @@ class TestCreateVisualImage(unittest.TestCase):
             os.remove(source)
             paths = list(Path(project).glob('*.Report/definition/pages/*/visuals/*/visual.json'))
             visuals = [json.loads(path.read_text(encoding='utf-8'))['visual'] for path in paths]
-            images = [visual for visual in visuals if visual['visualType'] == 'image']
+            images = [
+                visual for visual in visuals
+                if visual['visualType'] == 'image'
+                and visual.get('objects', {}).get('general', [{}])[0]
+                .get('properties', {}).get('imageUrl', {}).get('expr', {})
+                .get('Literal', {}).get('Value', '').startswith(
+                    "'data:image/svg+xml;base64,")
+            ]
             self.assertEqual(len(images), 1)
             visual = images[0]
             literal = visual['objects']['general'][0]['properties']['imageUrl']['expr']['Literal']['Value']

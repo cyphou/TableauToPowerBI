@@ -31,35 +31,35 @@ Keep three conversion surfaces distinct:
 | Priority | Work | Owner(s) | Acceptance gate |
 |---|---|---|---|
 | **P0 — Active conversion contract** | Inventory the live public path from extraction through DAX or M emission. For each active function/transform dispatch, record accepted arities/types, null behavior, output class (exact/approximate/diagnostic), and owner. Mark standalone legacy helpers separately; never count a helper-only test as active-path coverage. | DAX / Wiring / Extractor / Semantic / Tester | Every active entry has a positive case and a negative/unsupported control. Generated DAX/M is syntactically valid or explicitly diagnostic; unsupported Tableau tokens do not remain executable. Test the public conversion path as well as parser helpers. |
-| **P1 — DAX grain and table-calculation context** | **Metadata transport delivered:** an unambiguous worksheet context now carries addressing, partition, order-by field/direction and worksheet identity to the converter; conflicting contexts pass no selected context. Next, prove mark grain and semantic row set before supporting `RUNNING_SUM`; keep `RUNNING_AVG/COUNT/MAX/MIN`, `SIZE`, and `FIRST/LAST` diagnostic until each has a separate proven lowering. Keep `INDEX()` as an explicitly lossy constant compatibility fallback unless a real row identity/order is proven. | Extractor / Semantic / DAX / Tester | Producer-backed fixtures prove unique context reaches the public converter and conflicting contexts are withheld. Before any cumulative lowering, positive tests cover row grain, order/ties, partitions, filters and totals; negative controls omit or conflict on each. Any later function enablement requires its own positive and negative controls. No fabricated `__SortColumn__`, `ALLSELECTED(..., TRUE())` running result, or inferred sort. |
-| **P1 — DAX scalar semantics** | Complete behavior-based cases for date, text, regex, numeric, null and security functions: arity, quoting, blanks, locale-sensitive literals, and nested calls. Tableau scalar `DATEADD` lowers only its supported parts; unknown parts are diagnostic and must not default to a month shift. `DATEDIFF` reorders only known literal intervals and leaves week/dynamic intervals diagnostic until boundary semantics are verified. `DATEPARSE` lowers only year-only and year-first ISO formats; ambiguous or missing formats are diagnostic. Unary `DATE`/`DATETIME` casts are arity-checked while the DAX three-argument `DATE` constructor is preserved. Keep unsupported spatial, script and user-attribute functions diagnostic unless a separately verified mapping exists. | DAX / Tester / Evidence | Assertions check semantic shape and validator results, not only substring presence. Literals and identifiers containing function-shaped text remain unchanged. Every approximation states its boundary; runtime/value parity is a separate gate. |
+| **P1 — DAX grain and table-calculation context** | **Metadata transport delivered.** `RUNNING_*` now emits a warned visible-row aggregate when cumulative row identity/order is unproved; it is deliberately not called a running result. Next, test the best-effort contract across `RUNNING_SUM/AVG/COUNT/MAX/MIN`, then pursue a true cumulative lowering only with proof of mark grain, ties, partition, filters and totals. Keep `SIZE` and `FIRST/LAST` as diagnostic until a plausible output is designed; keep `INDEX()` explicitly lossy. | Extractor / Semantic / DAX / Tester | Producer-backed fixtures prove context transport and warning persistence. Any true cumulative lowering requires positive/negative controls for row grain, order/ties, partitions, filters and totals. No fabricated sort key or parity claim from a visible-row approximation. |
+| **P1 — DAX scalar semantics** | Complete behavior-based cases for date, text, regex, numeric, null and security functions: arity, quoting, blanks, locale-sensitive literals, and nested calls. Tableau scalar `DATEADD` lowers only its supported parts; unknown parts are diagnostic and must not default to a month shift. `DATEDIFF` reorders supported literal intervals exactly; `WEEK` emits a warned 7-day approximation with week-start and extra arguments unverified. `DATEPARSE` lowers only year-only and year-first ISO formats; ambiguous or missing formats are diagnostic. Unary `DATE`/`DATETIME` casts are arity-checked while the DAX three-argument `DATE` constructor is preserved. For functions without an exact lowering, prefer a plausible executable approximation with an explicit warning; retain a diagnostic only when no executable form can be emitted safely. | DAX / Tester / Evidence | Assertions check semantic shape and validator results, not only substring presence. Literals and identifiers containing function-shaped text remain unchanged. Every approximation states its boundary; runtime/value parity is a separate gate. |
 | **P1 — Workbook Power Query M** | Contract-test extraction → connection dispatch → generated M/TMDL binding, including exact field identity, types, nulls, escaping, source errors and transform ordering. Treat the `_M_GENERATORS` key/function counts as inventory, not independent connector certification. Keep DAX-to-M expression pushdown bounded to explicitly supported operators/functions. Static validation for multiline shared expressions in `expressions.tmdl` is already delivered; preserve it as a required gate and extend it only with failing examples. | Extractor / Wiring / Semantic / Tester | Each newly supported M shape has producer-backed input, positive and negative controls, identifier/type/error assertions and `m_validator` coverage for both partitions and shared expressions. Unsupported bindings remain visible; no empty-table fallback may masquerade as success. |
 | **P2 — Prep-to-M dialect coverage** | Continue report #81 separately: add only producer-observed Prep operation variants with explicit schema, execution order, null and type semantics. Do not generalize workbook M transformations into unsupported Prep dialects. | Extractor / Wiring / Tester | Producer-backed fixtures cover accepted variants; unsupported variants publish structured blockers and no successful-looking query. Native execution remains `not_run` without an authorized Power Query environment. |
 | **P2 — Native semantic evidence** | Execute representative DAX and M conversions only in an explicitly authorized local environment with accessible test data. Compare schema, rows, nulls, errors and values against source expectations, with a deliberately incorrect negative control. | Reviewer / Evidence / Deployer | Record engine/version, prerequisites, source and target context, refresh result and comparison evidence separately. If unavailable or unauthorized, status stays `not_run`; static tests never promote it to parity. |
 
 ### Current baseline and next increment
 
-The active converter now fails closed for functions whose required semantics are
-not proven. Unambiguous table-calculation order metadata is transported, but it
-does not prove mark grain, unique ties, filter scope or total semantics; running
-calculations therefore remain diagnostic. Other examples include
+The active converter now prefers an exact lowering, then a clearly warned
+best-effort formula when a plausible executable shape exists. `RUNNING_*` uses
+a visible-row aggregate approximation, not a cumulative result: transported
+order metadata still does not prove mark grain, unique ties, filter scope or
+total semantics. Other unresolved examples include
 `SIZE()` without mark grain, `FIRST/LAST()` without ordering, every
-`WINDOW_PERCENTILE` call, and bounded correlation/covariance windows. `SPLIT` remains a guarded approximation:
-source values containing the reserved `|` separator return `BLANK()` when the
-delimiter differs. `INDEX()` remains a documented constant compatibility
-fallback, not a row-number conversion. User-attribute security functions and
-spatial/script DAX fallbacks require explicit mapping or separate PBIR/runtime
-evidence; they are not counted as fully converted. Scalar Tableau `DATEADD`
-supports the explicitly mapped parts only; unknown parts now retain a
-diagnostic instead of becoming `EDATE`.
+`WINDOW_PERCENTILE` call, and bounded correlation/covariance windows. `SPLIT`
+remains a warned approximation: it keeps the `PATHITEM` result when source
+values contain the reserved `|` separator rather than blanking them; those
+values may be split incorrectly. `INDEX()` remains a documented constant
+compatibility fallback, not a row-number conversion. User-attribute security
+functions and spatial/script DAX fallbacks remain diagnostic until a plausible
+executable mapping exists. Scalar Tableau `DATEADD` supports the explicitly
+mapped parts only; unknown parts retain a diagnostic instead of becoming
+`EDATE`.
 
-**Next implementation slice:** prove the mark row identity and row set for one
-producer-backed `RUNNING_SUM` case, including order uniqueness/ties, partition,
-filters and totals. Keep the formula diagnostic unless that proof is complete;
-the newly transported order context is necessary but insufficient. In parallel,
-build the P0 dispatch matrix for active workbook M generators and the DAX-to-M
-subset; do not merge the Prep #81 dialect into that matrix. Only after these
-focused gates pass
+**Next implementation slice:** build the P0 dispatch matrix for active workbook
+M generators and the DAX-to-M subset, keeping Prep #81 separate. Then extend
+producer-backed best-effort contract tests for RUNNING and other recoverable
+formula gaps. A future cumulative lowering still requires proof of row identity,
+order uniqueness/ties, partition, filters and totals. Only after these focused gates pass
 should the unchanged full suite and the current corpus gate be rerun. The last
 recorded corpus result below remains failed; this roadmap does not change it.
 
@@ -166,50 +166,35 @@ execution, value or source parity, refresh, saved state or deployment; those
 remain `not_run` without separate authorized evidence. Local delivery does not
 close the failed corpus gate or establish native acceptance.
 
-### FIXED report follow-up — open plan, 2026-11-13
+### Best-effort formula policy — confirmed 2026-11-16
 
-1. **Outcome:** answer "verifie le rapport et prepare le plan si besoin" with
-  a bounded evidence plan, not a new conversion policy. Guardian pre-update:
-  **WARN**, approved plan location here; the user's earlier "oui" authorized
-  exact first, then warned probable approximation, then diagnostic `BLANK()`
-  for missing/ambiguous evidence. The delivered bounds above remain unchanged.
-2. **Current evidence:** the 13 November report measured `d6f4b34`, not current
-  `e74509a`. Reviewer found no converter regression; the three agent instructions
-  are already updated. Latest reported focused run: **85 passed in 12.05s** in
-  `tests/test_reported_dax_semantics.py`, not a new full-suite measurement.
-  Its XML/ordinary-batch test (line 1846) uses a direct FIXED on a `sum:` pill,
-  without view dimensions; persisted TMDL asserts nonblank `SUMX/VALUES/MIN`,
-  warning/`MigrationNote`, no `ALLEXCEPT`, and static openability. This covers
-  the three static R4 criteria: Tableau `SUM([calc])` often is a `sum:` pill.
-  A separate one-hop `SUM([Fixed])` consumer is covered at TMDL level (line 2137),
-  not XML/CLI. Extending that boundary is coverage work, not a proven defect.
-3. **Smallest slice / open increments:** (A) @tester extends that existing file
-  and reuses its CLI fixture with a separate same-datasource aggregate consumer
-  and matching explicit shelf prefix: SUM/AVG/MIN/MAX iterators and single/multi
-  physical keys as needed. Retain rejection controls for absent evidence,
-  inferred/default SUM, ATTR, conflicting datasources/shelves, and exact-first
-  proof requirements. Source-owner edits are conditional on a new failing test.
-  (B) @extractor/@semantic classify an authorized privately supplied workbook:
-  **117 fields, 58 SUM, 41 AVG, 18 ATTR, 19 FIXED + 3 dependencies** are reported,
-  not independently verified. Record eligible/unsupported/conflicting/unknown
-  ownership outcomes; do not promise all 19 succeed or commit private data.
-  (C) @tester/@reviewer/@evidence compare the reported **487** through authorized
-  Tableau/Power BI queries with matching context, filters and totals; no app
-  launch by default. (D) Communication: parent confirms six pasted sections
-  received, not the full earlier 09/12 November reports, which were not supplied.
-4. **Dependencies:** A precedes B's cross-stage acceptance; C needs explicit
-  native authorization and accessible data. D preserves report provenance.
-  @extractor/@semantic own extraction/model repairs; @dax owns converter repairs.
-5. **Validation:** run the existing focused 85-test file after A; inspect persisted
-  callee/consumer iterators, warnings and every key, without `BLANK()` or
-  `ALLEXCEPT` for eligible cases, plus rejection/exact-path controls. This static
-  gate does not prove 487 in either engine. Retain the broader release gate below.
-6. **Risks and non-goals:** static openability or recoverability is not validated
-  semantic quality. Do not weaken security, Hyper guards or verified-exact proof;
-  native execution, filters/totals and private-corpus acceptance remain unverified.
-7. **Commit boundary:** this request changes only `docs/ROADMAP.md`; no source,
-  tests, native actions, commit or push. Future A groups its public tests with
-  source fixes only if required; B/C evidence stays private and outside commits.
+The product owner confirmed a policy change: exact DAX remains first choice;
+when equivalence is uncertain but an executable approximation is plausible,
+emit that formula with a DAX comment and TMDL `MigrationNote` instead of
+replacing a recoverable measure with `BLANK()`. Warnings must name inferred
+aggregation, row-grain, ordering, filter and total assumptions. Approximation
+does not imply semantic or native value parity. The prior 13 November statement
+that this was only a bounded evidence plan, not a policy change, is withdrawn.
+
+**Delivered in this increment:**
+
+- `RUNNING_SUM/AVG/COUNT/MAX/MIN` now emit the previous visible-row aggregate
+  approximation, explicitly labeled as **not a verified cumulative result**;
+  mark grain, row order/ties, partition, source filters and totals remain
+  unverified. The generated measure also carries a `MigrationNote`.
+- FIXED uses explicit shelf evidence when available; inferred/default cases use
+  a warned SUM default; conflicting cases select the supported majority, then
+  SUM on a tie. Same-table numeric row-calculated values and directly composed
+  same-datasource FIXED consumers are supported with warnings.
+- Public synthetic regressions cover R7/R8/R9 output shape and TMDL notes. They
+  do not execute Power BI or establish the reported **487** / **-3,158** values.
+
+**Still open:** native Tableau/Power BI value checks for the reported totals;
+the 12 November report; the separate 13 November report, which was not present
+under its named Downloads path; and best-effort design for other functions with
+no scalar DAX equivalent. No private workbook or screenshot is committed.
+Static openability, native refresh, saved-state persistence and value parity
+remain separate gates.
 
 ### Next increment — current-corpus correctness
 

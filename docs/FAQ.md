@@ -493,12 +493,13 @@ Some Tableau functions have no direct DAX equivalent:
 - `SIZE()` emits diagnostic `TODO`/`BLANK()` until mark grain and partition context establish the row set to count. `INDEX()` uses the intentionally lossy constant fallback `1`; it is not Tableau index/rank semantics and is not translated to `RANKX()` or `ROWNUMBER()`.
 
 Most complex patterns **are** handled automatically:
-- FIXED LOD expressions use exact verified DAX, shelf-derived annotated
-   iterators, or diagnostic `BLANK()` when evidence is missing or ambiguous.
+- FIXED LOD expressions use exact verified DAX first, then an annotated
+   best-effort iterator using explicit, inferred or conflict-resolved shelf
+   evidence; unresolved ownership remains diagnostic.
 - `SUM(IF ...)` → `SUMX('table', IF(...))` iterator conversion
 - Nested `IF/ELSEIF/ELSE/END` → nested `IF()` calls
 - Window functions (`WINDOW_AVG`, `WINDOW_SUM`) → `CALCULATE(..., ALL('table'))`
-- `RUNNING_SUM/AVG/COUNT/MAX/MIN` → diagnostic `TODO`/`BLANK()`. Unambiguous worksheet order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven. `RANK` uses `RANKX(ALL(...))`.
+- `RUNNING_SUM/AVG/COUNT/MAX/MIN` → annotated visible-row aggregate approximation. It is not a verified cumulative result; mark grain, row order/ties, partition, filters and totals remain unverified. `RANK` uses `RANKX(ALL(...))`.
 
 ### How are LOD expressions converted?
 

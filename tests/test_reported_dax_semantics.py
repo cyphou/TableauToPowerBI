@@ -726,7 +726,6 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
             ("{ FIXED [OtherHousing].[Sector] : MIN([Homes]) }", {}),
             ("{ FIXED [Sector], [Sector] : MIN([Homes]) }", {}),
             ("{ FIXED [Sector] : MIN([Homes] + 1) }", {}),
-            ("{ FIXED [Sector] : MIN([Homes]) / SUM([Homes]) }", {}),
             ("{ FIXED [Sector] : [Homes] }", {}),
         )
         for formula, overrides in cases:
@@ -738,6 +737,20 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
                 expression = convert_tableau_formula_to_dax(formula, **options)
                 _assert_unsupported(self, expression, "FIXED", "physical")
                 self.assertNotIn("ALLEXCEPT", expression)
+
+    def test_fixed_ratio_of_local_aggregates_gets_warned_approximation(self):
+        expression = convert_tableau_formula_to_dax(
+            "{ FIXED [Sector] : MIN([Homes]) / SUM([Homes]) }",
+            table_name="Housing", table_columns=["Sector", "Homes"],
+            column_table_map={"Sector": "Housing", "Homes": "Housing"},
+            fixed_shelf_aggregation="SUM",
+        )
+        self.assertIn("FIXED best-effort approximation", expression)
+        self.assertIn(
+            "DIVIDE(MIN('Housing'[Homes]), SUM('Housing'[Homes]))", expression)
+        self.assertIn("ALLEXCEPT('Housing', 'Housing'[Sector])", expression)
+        self.assertNotIn("TODO", expression)
+        self.assertNotIn("BLANK()", expression)
 
     def test_fixed_unresolved_original_foreign_qualification_is_not_local(self):
         expression = convert_tableau_formula_to_dax(
@@ -2903,7 +2916,7 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
         return re.sub(r"^/\* Tableau calculation;[^\n]*?\*/\s*", "",
                       declaration.group(1).strip(), count=1)
 
-    def test_tmdl_generation_wires_include_shelf_and_keeps_unproven_diagnostic(self):
+    def test_tmdl_generation_wires_include_shelf_and_approximates_without_proof(self):
         datasource = self._fixed_datasource()
         datasource["tables"][0]["columns"] = [
             {"name": "Sector", "datatype": "string"},
@@ -2954,9 +2967,14 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
         self.assertIn(
             "CALCULATE(SUM('Housing'[Homes]), REMOVEFILTERS('Housing'[Sector]))",
             self._fixed_declaration(content, "ExcludedHomes", "Homes excl Sector"))
-        _assert_unsupported(
-            self, self._fixed_declaration(content, "UnprovenInclude", "Unproven include"),
-            "INCLUDE", "explicit", "shelf")
+        unproven = self._fixed_declaration(
+            content, "UnprovenInclude", "Unproven include")
+        self.assertIn("shelf (sum:) INCLUDE approximation", unproven)
+        self.assertIn("SUMX(VALUES('Housing'[Sector])", unproven)
+        self.assertIn("SUM('Housing'[Homes])", unproven)
+        self.assertIn("unverified", unproven.lower())
+        self.assertNotIn("TODO", unproven)
+        self.assertNotIn("BLANK()", unproven)
 
     def test_r4_fixed_sum_shelf_without_view_dimensions_survives_tmdl_postprocess(self):
         from powerbi_import.dax_validator import validate_dax_expression
@@ -2978,7 +2996,121 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
         self.assertNotIn("ALLEXCEPT", content)
         self.assertEqual(validate_dax_expression(expression), [])
 
-    def test_fixed_missing_or_ambiguous_shelf_evidence_serializes_blank(self):
+    def test_r9_inferred_fixed_shelf_emits_warned_approximation(self):
+        worksheets = [{"name": "Synthetic Total", "dimensions": [], "fields": [{
+            "name": "[FixedHomes]", "datasource": "Synthetic",
+            "aggregation": "SUM", "aggregation_evidence": "inferred",
+            "aggregation_candidates": ["sum"],
+        }]}]
+        content = self._generate_fixed_tmdl(
+            [self._fixed_datasource()], worksheets)["Housing"]
+        expression = self._fixed_declaration(content)
+
+        self.assertIn("SUMX(VALUES('Housing'[Sector])", expression)
+        self.assertIn("inferred", expression.lower())
+        self.assertIn("aggregation", expression.lower())
+        self.assertIn("unverified", expression.lower())
+        self.assertNotIn("BLANK()", expression)
+        self.assertIn('annotation MigrationNote = "FIXED', content)
+
+    def test_r7_fixed_shelf_accepts_same_table_calculated_numeric_column(self):
+        datasource = self._fixed_datasource()
+        datasource["calculations"] = [
+            {"name": "[AdjustedHomes]", "caption": "Logements ajustes",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real", "formula": "[Homes] * 1"},
+            {"name": "[FixedAdjustedHomes]", "caption": "Fixed adjusted homes",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real",
+             "formula": "{ FIXED [Sector] : MIN([AdjustedHomes]) }"},
+        ]
+        worksheets = [{"name": "Synthetic Total", "dimensions": [], "fields": [{
+            "name": "[FixedAdjustedHomes]", "datasource": "Synthetic",
+            "aggregation": "SUM", "aggregation_evidence": "explicit",
+            "aggregation_candidates": ["sum"],
+        }]}]
+
+        content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
+        expression = self._fixed_declaration(
+            content, "FixedAdjustedHomes", "Fixed adjusted homes")
+
+        self.assertIn("SUMX(VALUES('Housing'[Sector])", expression)
+        self.assertIn("MIN('Housing'[Logements ajustes])", expression)
+        self.assertIn("approximation; source filter scope and totals unverified", expression)
+        self.assertNotIn("BLANK()", expression)
+        self.assertIn("column 'Logements ajustes'", content)
+        self.assertIn('annotation MigrationNote = "FIXED', content)
+
+    def test_r8_fixed_shelf_propagates_through_calculation_consumer(self):
+        datasource = self._fixed_datasource()
+        datasource["tables"][0]["columns"].append(
+            {"name": "Consumption", "datatype": "real"})
+        datasource["calculations"] = [
+            {"name": "[FixedHomes]", "caption": "Logements par secteur",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real", "formula": "{ FIXED [Sector] : MIN([Homes]) }"},
+            {"name": "[FixedConsumption]", "caption": "Conso par secteur",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real",
+             "formula": "{ FIXED [Sector] : MIN([Consumption]) }"},
+            {"name": "[SectorDifference]", "caption": "Ecart par secteur",
+             "datasource_name": "Synthetic", "role": "measure",
+             "datatype": "real",
+             "formula": "[FixedHomes] - [FixedConsumption]"},
+        ]
+        worksheets = [{"name": "Sector difference total", "dimensions": [], "fields": [{
+            "name": "[SectorDifference]", "datasource": "Synthetic",
+            "aggregation": "SUM", "aggregation_evidence": "explicit",
+            "aggregation_candidates": ["sum"],
+        }]}]
+
+        content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
+        for raw_name, caption, column in (
+                ("FixedHomes", "Logements par secteur", "Homes"),
+                ("FixedConsumption", "Conso par secteur", "Consumption")):
+            with self.subTest(fixed=caption):
+                expression = self._fixed_declaration(content, raw_name, caption)
+                self.assertIn("SUMX(VALUES('Housing'[Sector])", expression)
+                self.assertIn(f"MIN('Housing'[{column}])", expression)
+                self.assertIn("approximation; source filter scope and totals unverified",
+                              expression)
+                self.assertNotIn("BLANK()", expression)
+                self.assertIn('annotation MigrationNote = "FIXED', content)
+        consumer = self._fixed_declaration(
+            content, "SectorDifference", "Ecart par secteur")
+        self.assertIn("Logements par secteur", consumer)
+        self.assertIn("Conso par secteur", consumer)
+        self.assertNotIn("BLANK()", consumer)
+        self.assertIn('annotation MigrationNote = "Depends on warned approximation(s):',
+                  content)
+
+    def test_running_sum_tmdl_carries_best_effort_migration_note(self):
+        datasource = self._fixed_datasource()
+        datasource["calculations"] = [{
+            "name": "[RunningHomes]", "caption": "Running homes",
+            "datasource_name": "Synthetic", "role": "measure",
+            "datatype": "real", "formula": "RUNNING_SUM(SUM([Homes]))",
+        }]
+        worksheets = [{
+            "name": "Running total",
+            "fields": [{"name": "[RunningHomes]", "datasource": "Synthetic"}],
+            "table_calcs": [{
+                "field": "Running homes", "compute_using": ["Sector"],
+                "order_by": [{"field": "Sector", "direction": "ASC"}],
+                "ordering_type": "Rows", "direction": "ASC", "at_level": "",
+            }],
+        }]
+
+        content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
+        expression = self._fixed_declaration(
+            content, "RunningHomes", "Running homes")
+        self.assertIn("Table-calculation best-effort approximation", expression)
+        self.assertIn("visible-row aggregate is not a verified cumulative result", expression)
+        self.assertIn('annotation MigrationNote = "Table-calculation best-effort approximation;',
+                      content)
+        self.assertNotIn("BLANK()", expression)
+
+    def test_fixed_missing_or_ambiguous_shelf_evidence_uses_warned_sum_default(self):
         valid = {"name": "[FixedHomes]", "datasource": "Synthetic",
                  "aggregation": "SUM"}
         cases = {
@@ -3001,8 +3133,12 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                               for index, field in enumerate(fields)]
                 content = self._generate_fixed_tmdl(
                     [self._fixed_datasource()], worksheets)["Housing"]
-                _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
-                self.assertNotIn("shelf (sum:) approximation", content)
+                expression = self._fixed_declaration(content)
+                self.assertIn("SUMX(VALUES('Housing'[Sector])", expression)
+                self.assertRegex(expression.lower(), r"(?:inferred|conflicting)")
+                self.assertIn("unverified", expression.lower())
+                self.assertNotIn("BLANK()", expression)
+                self.assertIn('annotation MigrationNote = "FIXED', content)
                 self.assertNotIn("ALLEXCEPT", content)
 
     def test_fixed_datasource_and_calculation_caption_aliases_reach_emitted_tmdl(self):
@@ -3021,7 +3157,7 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                                   self._fixed_declaration(content))
                     self.assertIn('annotation MigrationNote = "FIXED shelf (sum:)', content)
 
-    def test_fixed_same_caption_in_different_datasources_does_not_share_shelf(self):
+    def test_fixed_same_caption_in_different_datasources_keeps_local_default(self):
         first = self._fixed_datasource()
         second = self._fixed_datasource("OtherSynthetic", "OtherHousing")
         second["tables"][0]["columns"] = [
@@ -3050,7 +3186,9 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                     self.assertIn("CALCULATE(MIN('OtherHousing'[OtherHomes]))", other)
                     self.assertNotIn("shelf (sum:)", other)
                 else:
-                    _assert_unsupported(self, other, "FIXED", "grain")
+                    self.assertIn("SUMX(VALUES('OtherHousing'[OtherSector])", other)
+                    self.assertIn("inferred", other.lower())
+                    self.assertNotIn("'Housing'[", other)
 
     def test_fixed_second_datasource_owns_identically_named_physical_columns(self):
         first = self._fixed_datasource()
@@ -3065,6 +3203,8 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
             "/* shelf (avg:) approximation; source filter scope and totals "
             "unverified */ AVERAGEX(VALUES('OtherHousing'[Sector]), "
             "CALCULATE(MIN('OtherHousing'[Homes])))")
+        self.assertIn("source calculation identity is unverified",
+                      contents["OtherHousing"])
         self.assertNotIn("'Housing'[", expression)
         self.assertNotIn("measure 'Homes by Sector'", contents["Housing"])
 
@@ -3086,7 +3226,9 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
         self.assertEqual(expression,
             f"/* {note} */ AVERAGEX(VALUES('Housing'[Sector]), "
             "CALCULATE(MIN('Housing'[Homes])))")
-        self.assertIn('annotation MigrationNote = "FIXED ' + note + '"', content)
+        self.assertIn(
+            'annotation MigrationNote = "FIXED ' + note
+            + ' ; source calculation identity is unverified', content)
         self.assertNotIn("BLANK()", expression)
         self.assertNotIn("ALLEXCEPT", expression)
         self.assertEqual(self._fixed_declaration(
@@ -3129,9 +3271,19 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                     fixed = self._fixed_declaration(content)
                     consumer = self._fixed_declaration(content, "Consumer", "Consumer")
                     if outer is not None and outer != shelf:
-                        _assert_unsupported(self, fixed, "FIXED")
-                        _assert_unsupported(self, consumer)
-                        self.assertNotIn("approximation;", content)
+                        iterator_by_aggregation = {
+                            "SUM": "SUMX", "AVG": "AVERAGEX",
+                            "MIN": "MINX", "MAX": "MAXX",
+                        }
+                        note = (f"shelf ({outer.lower()}: chosen from conflicting evidence) "
+                                "approximation; aggregation conflict, source filter scope "
+                                "and totals unverified")
+                        expected = (
+                            f"/* {note} */ {iterator_by_aggregation[outer]}("
+                            "VALUES('Housing'[Sector]), "
+                            "CALCULATE(MIN('Housing'[Homes])))")
+                        self.assertEqual(fixed, expected)
+                        self.assertEqual(consumer, expected)
                     else:
                         expected = (
                             f"/* shelf ({shelf.lower()}:) approximation; source filter "
@@ -3141,7 +3293,7 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                         self.assertEqual(fixed, expected)
                         self.assertEqual(consumer, expected)
 
-    def test_fixed_dependency_cycles_and_longer_chains_do_not_infer_shelf(self):
+    def test_fixed_default_does_not_inherit_shelf_through_cycles_or_longer_chains(self):
         cases = {
             "self cycle": [("Consumer", "SUM([Consumer])")],
             "mutual cycle": [("Consumer", "[Other]"), ("Other", "[Consumer]")],
@@ -3162,9 +3314,10 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                     "name": "[Consumer]", "datasource": "Synthetic",
                     "aggregation": "SUM"}]}]
                 content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
-                _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
-                self.assertNotIn("approximation;", content)
-                self.assertNotIn("SUMX(VALUES(", content)
+                fixed = self._fixed_declaration(content)
+                self.assertIn("SUMX(VALUES('Housing'[Sector])", fixed)
+                self.assertIn("shelf (sum: inferred) approximation", fixed)
+                self.assertNotIn("chosen from conflicting evidence", fixed)
 
     def test_fixed_ambiguous_dependency_target_does_not_infer_shelf(self):
         datasource = self._fixed_datasource()
@@ -3182,7 +3335,7 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
             content, "Consumer", "Consumer"))
         self.assertNotIn("approximation;", content)
 
-    def test_fixed_cross_datasource_dependency_does_not_infer_shelf(self):
+    def test_fixed_cross_datasource_dependency_uses_only_local_default(self):
         first = self._fixed_datasource()
         second = self._fixed_datasource("OtherSynthetic", "OtherHousing")
         second["calculations"] = [{
@@ -3193,12 +3346,15 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
             "name": "[Consumer]", "datasource": "OtherSynthetic",
             "aggregation": "SUM"}]}]
         contents = self._generate_fixed_tmdl([first, second], worksheets)
-        _assert_unsupported(self, self._fixed_declaration(contents["Housing"]), "FIXED")
+        local_fixed = self._fixed_declaration(contents["Housing"])
+        self.assertIn("SUMX(VALUES('Housing'[Sector])", local_fixed)
+        self.assertIn("inferred", local_fixed.lower())
+        self.assertIn("source calculation identity is unverified", contents["Housing"])
+        self.assertNotIn("'OtherHousing'[", local_fixed)
         _assert_unsupported(self, self._fixed_declaration(
             contents["OtherHousing"], "Consumer", "Consumer"))
-        self.assertNotIn("approximation;", "\n".join(contents.values()))
 
-    def test_fixed_extracted_measure_values_conflict_prevents_approximation(self):
+    def test_fixed_extracted_measure_values_conflict_uses_warned_majority_tie_break(self):
         for derivations in (("Sum", "Avg"), ("Avg", "Sum")):
             with self.subTest(derivations=derivations):
                 worksheet = ET.fromstring("""
@@ -3224,10 +3380,14 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                 self.assertEqual(field["aggregation"], derivations[0].lower())
                 content = self._generate_fixed_tmdl([self._fixed_datasource()], [{
                     "name": worksheet.get("name"), "fields": fields}])["Housing"]
-                _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
-                self.assertNotIn("approximation;", content)
+                expression = self._fixed_declaration(content)
+                self.assertIn("SUMX(VALUES('Housing'[Sector])", expression)
+                self.assertIn("conflicting", expression.lower())
+                self.assertIn("unverified", expression.lower())
+                self.assertNotIn("BLANK()", expression)
+                self.assertIn('annotation MigrationNote = "FIXED', content)
 
-    def test_fixed_extracted_measure_values_without_aggregation_is_not_evidence(self):
+    def test_fixed_extracted_measure_values_without_aggregation_uses_warned_default(self):
         for instances, evidence in (("", "inferred"), (
                 '<column-instance column="[FixedHomes]" derivation="User" '
                 'name="[usr:FixedHomes:qk]" />', "unspecified")):
@@ -3253,8 +3413,11 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                     self.assertNotIn("aggregation", field)
                 content = self._generate_fixed_tmdl([self._fixed_datasource()], [{
                     "name": worksheet.get("name"), "fields": fields}])["Housing"]
-                _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
-                self.assertNotIn("approximation;", content)
+                expression = self._fixed_declaration(content)
+                self.assertIn("SUMX(VALUES('Housing'[Sector])", expression)
+                self.assertIn("inferred", expression.lower())
+                self.assertNotIn("BLANK()", expression)
+                self.assertIn('annotation MigrationNote = "FIXED', content)
 
     def test_fixed_extracted_normal_sum_prefix_enables_approximation(self):
         worksheet = ET.fromstring("""
@@ -3602,33 +3765,54 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                 }],
                 "calculations": [
                     {"name": "[FixedHousing]", "caption": "Logements par secteur",
+                     "datasource_name": "Synthetic",
                      "role": "measure", "datatype": "real",
                      "formula": "{ FIXED [Secteur] : MIN([Logements]) }"},
-                    {"name": "[TotalHousing]", "caption": "Somme Logements",
+                    {"name": "[FixedConsumption]", "caption": "Conso par secteur",
+                     "datasource_name": "Synthetic",
                      "role": "measure", "datatype": "real",
-                     "formula": "SUM([FixedHousing])"},
+                     "formula": "{ FIXED [Secteur] : MIN([Logements]) }"},
+                    {"name": "[SectorDifference]", "caption": "Ecart par secteur",
+                     "datasource_name": "Synthetic",
+                     "role": "measure", "datatype": "real",
+                     "formula": "[FixedHousing] - [FixedConsumption]"},
                 ],
                 "columns": [], "relationships": [], "connection_map": {},
             }
             model_dir = root / "Demo.SemanticModel"
-            generate_tmdl([datasource], "Demo", {}, str(model_dir))
+            worksheets = [{"name": "R8", "fields": [{
+                "name": "[SectorDifference]", "datasource": "Synthetic",
+                "aggregation": "SUM", "aggregation_evidence": "explicit",
+                "aggregation_candidates": ["sum"],
+            }]}]
+            generate_tmdl([datasource], "Demo", {"worksheets": worksheets},
+                          str(model_dir))
             content = (model_dir / "definition" / "tables" / "Zone.tmdl").read_text(
                 encoding="utf-8")
-            for name in ("Logements par secteur", "Somme Logements"):
+            for name in ("Logements par secteur", "Conso par secteur",
+                         "Ecart par secteur"):
                 with self.subTest(measure=name):
                     declaration = re.search(
                         rf"(?m)^\tmeasure '{re.escape(name)}' =([^\n]*)", content)
                     self.assertIsNotNone(declaration, content)
-                    self.assertIn(_FALLBACK, declaration.group(1))
-                    self.assertIn("BLANK()", declaration.group(1))
+                    self.assertNotIn(_FALLBACK, declaration.group(1))
+                    self.assertNotIn("BLANK()", declaration.group(1))
+                    if name == "Ecart par secteur":
+                        self.assertTrue(
+                            declaration.group(1).strip().endswith(
+                                "[Logements par secteur] - [Conso par secteur]"),
+                            declaration.group(1),
+                        )
+                    else:
+                        self.assertRegex(
+                            declaration.group(1), r"/\* .*approximation.*\*/")
+            self.assertIn('annotation MigrationNote = "FIXED ', content)
+            self.assertIn('annotation MigrationNote = "Depends on warned approximation(s):',
+                          content)
 
             report = build_quality_report(
-                {"datasources": [datasource]}, str(root), "Demo",
+                {"datasources": [datasource], "worksheets": worksheets}, str(root), "Demo",
                 quality_policy="production")
-            self.assertEqual(report.status, "FAIL")
-            self.assertGreaterEqual(
-                report.semantic_context["measure_context"]["fallback_count"], 2)
+            self.assertEqual(
+                report.semantic_context["execution"]["status"], "not_run")
             self.assertEqual(report.semantic_context["execution"]["status"], "not_run")
-            for name in ("Logements par secteur", "Somme Logements"):
-                self.assertTrue(any(name in blocker and "fallback" in blocker.lower()
-                                    for blocker in report.blockers), report.blockers)

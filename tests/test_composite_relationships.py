@@ -58,11 +58,14 @@ def test_partial_repair_project_is_data_free_and_remains_quality_fail(tmp_path, 
     visual_paths = glob(os.path.join(project, '*.Report', 'definition', 'pages',
                                      '*', 'visuals', '*', 'visual.json'))
     assert visual_paths
+    visual_types = []
     for path in visual_paths:
         with open(path, encoding='utf-8') as handle:
             visual = json.load(handle)['visual']
-        assert visual['visualType'] == 'textbox'
+        visual_types.append(visual['visualType'])
         assert 'query' not in visual
+    assert 'textbox' in visual_types
+    assert set(visual_types).issubset({'textbox', 'image'})
     quality = build_quality_report(original, project, 'RepairProject')
     assert quality.status == 'FAIL'
     assert any('Composite key requires source evidence' in issue for issue in quality.blockers)

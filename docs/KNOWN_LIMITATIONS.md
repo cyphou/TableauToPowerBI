@@ -450,16 +450,15 @@ to bypass a placeholder. Missing/invalid proof cannot produce a claim of exact
 equivalence. This exact path does not cover multi-table LOD ratios or arbitrary
 `FIXED` bodies.
 
-Without exact proof, explicit, consistent `sum:`, `avg:`, `min:` or `max:`
-worksheet shelf evidence can produce an annotated SUMX/AVERAGEX/MINX/MAXX over
-all resolved physical FIXED keys. Support is limited to direct physical-column
-aggregates in one table, including a one-hop calculation reference within the
-same datasource and a matching optional outer aggregation. The comment and
-MigrationNote name the shelf and state that source filter scope and totals are
-unverified. Missing, inferred, unsupported or conflicting shelf evidence, or
-unresolved bindings, retain diagnostic `BLANK()`. A default SUM chosen for
-visual rendering is not evidence of a source shelf. Generated DAX and static
-validation do not establish native execution or source/target value parity.
+Without exact proof, FIXED emits the most plausible bounded SUMX/AVERAGEX/MINX/
+MAXX iterator over resolved keys. Explicit shelves retain their current warning;
+inferred/default aggregation is labeled inferred; conflicting evidence chooses
+the supported majority, with SUM as the tie-breaker. Same-table numeric
+row-calculated values and directly composed same-datasource consumers are
+supported. DAX comments and `MigrationNote` state inferred/conflicting evidence
+and unverified source filters/totals. Complex consumer chains, unresolved
+ownership, and formulas that cannot produce valid DAX remain diagnostic. The
+approximation is not native execution or source/target value parity.
 
 ### Functions with No DAX Equivalent
 
@@ -470,7 +469,7 @@ validation do not establish native execution or source/target value parity.
 | COLLECT | Diagnostic `TODO`/`BLANK()` fallback | No DAX spatial aggregate equivalent |
 | SCRIPT_BOOL/INT/REAL/STR | Diagnostic `TODO`/`BLANK()` DAX fallback; PBIR may separately create a `scriptVisual` | Script visuals depend on worksheet-level source detection; generation does not establish Python/R runtime availability or output parity |
 | USERATTRIBUTE, USERATTRIBUTEINCLUDES, ISUSERNAME | Diagnostic `TODO`/`BLANK()` fallback | Requires explicit identity and user-attribute mapping; no automatic Entra/RLS mapping is inferred |
-| **SPLIT** | ⚠️ Guarded `PATHITEM`/`PATHITEMREVERSE` approximation; 2-arg form defaults to token 1 | Blank input returns `BLANK()`. A literal `|` delimiter uses `PATHITEM` directly. For other delimiters, the converter substitutes `|` and returns `BLANK()` if the source contains `|`, avoiding a potentially incorrect token. Negative indexes use `PATHITEMREVERSE`. |
+| **SPLIT** | ⚠️ `PATHITEM`/`PATHITEMREVERSE` best-effort approximation; 2-arg form defaults to token 1 | Blank input returns `BLANK()`. A literal `|` delimiter uses `PATHITEM` directly. For other delimiters, the converter substitutes `|` and keeps the result with a warning if source values may already contain `|`; those rows can be split incorrectly. Negative indexes use `PATHITEMREVERSE`. |
 
 ### Approximated Functions
 
@@ -484,7 +483,7 @@ validation do not establish native execution or source/target value parity.
 | INDEX | `1` compatibility fallback | Intentionally lossy; not Tableau index/rank semantics and not a `RANKX`/`ROWNUMBER` conversion |
 | SIZE | Diagnostic `TODO`/`BLANK()` | Requires verified mark grain and partition context; `compute_using` dimensions alone do not prove the row set |
 | RANK_PERCENTILE | `DIVIDE(RANKX()-1, COUNTROWS()-1)` | Edge cases with ties |
-| RUNNING_SUM/AVG/COUNT/MAX/MIN | Diagnostic `TODO`/`BLANK()` | Unambiguous worksheet order metadata is transported, but it does not prove mark grain, unique ties, filter scope or total semantics; the converter does not invent a running window. RUNNING_COUNT over COUNTD also requires verified mark ordering and partitioning. |
+| RUNNING_SUM/AVG/COUNT/MAX/MIN | Annotated `CALCULATE(inner, FILTER(ALLSELECTED(table), TRUE()))` | Visible-row aggregate approximation, not a proven cumulative result; mark grain, row order/ties, partition, source filters and totals are unverified. |
 | WINDOW_SUM/AVG/MAX/MIN | `CALCULATE(inner, ALL/ALLEXCEPT)` with OFFSET-based frame boundaries | Frame start/end positions approximated via OFFSET for specific patterns |
 | WINDOW_PERCENTILE | Active converter emits diagnostic `TODO`/`BLANK()` | Mark grain, percentile context, and optional frame semantics are not verified; a standalone legacy helper is not used by the main path |
 | WINDOW_CORR/COVAR/COVARP | Unbounded two-expression calls use custom `VAR`/`SUMX` approximations; calls with frame bounds emit diagnostic `TODO`/`BLANK()` | Partition and frame semantics remain approximate or unsupported; no value parity is claimed |

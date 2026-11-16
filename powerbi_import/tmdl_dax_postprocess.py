@@ -1031,6 +1031,38 @@ def propagate_unsupported_model_dependencies(
     def replace_with_diagnostic(index, reason, issue, ref_owner, ref_name, source_ref):
         owner, kind, item = objects[index]
         expression = item.get('expression', '')
+        existing_note = item.get('_migration_note', '')
+        if not existing_note:
+            existing_note = next((
+                annotation.get('value', '')
+                for annotation in item.get('annotations', [])
+                if isinstance(annotation, dict)
+                and annotation.get('name') == 'MigrationNote'
+                and isinstance(annotation.get('value'), str)
+            ), '')
+        if (isinstance(existing_note, str) and existing_note
+                and 'approximation' in existing_note.casefold()
+                and 'TODO: DAX conversion validation failed' not in expression):
+            note = (
+                f'{existing_note}; source calculation identity is unverified '
+                f'({issue}); best-effort DAX retained'
+            )
+            item['_migration_note'] = note
+            updated = False
+            for annotation in item.get('annotations', []):
+                if (isinstance(annotation, dict)
+                        and annotation.get('name') == 'MigrationNote'):
+                    annotation['value'] = note
+                    updated = True
+            if not updated and isinstance(item.get('annotations'), list):
+                item['annotations'].append({'name': 'MigrationNote', 'value': note})
+            diagnostics.append({
+                'table': owner, 'kind': kind, 'field': item['name'],
+                'reference_table': ref_owner, 'reference': ref_name,
+                'source_reference': source_ref,
+                'issue': f'approximation retained: {issue}',
+            })
+            return
         provenance = re.match(
             r'\s*/\*\s*Tableau calculation; migrated to DAX\b[\s\S]*?\*/\s*',
             expression, re.IGNORECASE)
@@ -1211,6 +1243,7 @@ def _validate_measures_after_rewrites(
         model['_datasources'] = [{'calculations': source_calculations}]
     propagate_unsupported_model_dependencies(
         model, defer_source_binding=True)
+    _propagate_direct_approximation_notes(result_table)
     # ── Phase 3: Post-processing DAX validation sweep ──
     # After all rewrites (SUM-of-measure unwrap, bare column wrapping),
     # validate every measure expression one more time.
@@ -1230,6 +1263,53 @@ def _validate_measures_after_rewrites(
                 )
     except Exception:
         pass  # validator must never block generation
+
+
+def _propagate_direct_approximation_notes(result_table):
+    """Surface direct dependencies on warned measures in their consumers."""
+    table_name = result_table.get('name', '')
+    measures = result_table.get('measures', [])
+    measures_by_name = {}
+    source_notes = {}
+    for measure in measures:
+        name = measure.get('name', '')
+        expression = measure.get('expression', '')
+        if not isinstance(name, str) or not name:
+            continue
+        measures_by_name.setdefault(name.casefold(), []).append(measure)
+        note = measure.get('_migration_note')
+        if (isinstance(note, str) and note
+                and 'TODO: DAX conversion validation failed' not in expression):
+            source_notes[id(measure)] = note
+
+    for consumer in measures:
+        expression = consumer.get('expression', '')
+        if not isinstance(expression, str) or not expression:
+            continue
+        refs, unsupported = _dax_dependency_tokens(expression)
+        if unsupported:
+            continue
+        dependencies = []
+        for owner, name, column_only in refs:
+            if column_only or (owner is not None
+                               and owner.casefold() != table_name.casefold()):
+                continue
+            candidates = measures_by_name.get(name.casefold(), [])
+            if len(candidates) != 1 or candidates[0] is consumer:
+                continue
+            note = source_notes.get(id(candidates[0]))
+            if note:
+                dependencies.append((name, note))
+        if not dependencies:
+            continue
+
+        dependency_notes = '; '.join(
+            f"'{name}': {note}" for name, note in dict.fromkeys(dependencies))
+        propagated = 'Depends on warned approximation(s): ' + dependency_notes
+        existing = consumer.get('_migration_note', '')
+        if propagated not in existing:
+            consumer['_migration_note'] = (
+                f'{existing}; {propagated}' if existing else propagated)
 
 
 def _fix_related_for_many_to_many(model):

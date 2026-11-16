@@ -104,25 +104,27 @@ These are real bugs that occurred during development. Review before every implem
 
 ## Project-Specific Rules
 
-**FIXED migration policy:** prefer supported exact proof without an approximation
-warning or relaxed proof requirements. Otherwise, retain an editable, annotated
-approximation only when physical FIXED keys and an explicit, consistent source
-shelf aggregation are resolved within the bounded policy:
-`sum:`/`avg:`/`min:`/`max:` select SUMX/AVERAGEX/MINX/MAXX over all FIXED keys,
-with source filter scope and totals explicitly unverified. Missing, unsupported
-or conflicting shelf evidence retains annotated `BLANK()`; never invent SUM or
-fabricate a verified scope. The implemented approximation is limited to direct
-column aggregates over physical keys in one table. Keep warnings in generated
-TMDL and distinguish static validation from native execution and value parity.
-An inferred/default SUM from extraction is not explicit shelf evidence.
+**Best-effort conversion policy:** use exact DAX when equivalence is proved.
+Otherwise emit the most plausible executable formula and a visible warning;
+semantic uncertainty alone must not replace a usable measure with `BLANK()` or
+cancel the report. Keep assumptions in an inline DAX comment and TMDL
+`MigrationNote`, and never call an approximation exact or treat static
+validation as native execution/value parity. Prefer observed evidence; when it
+is missing, use a conservative structural/default choice (Tableau's usual
+measure aggregation is SUM) and label it as inferred. For conflicting evidence,
+choose the most likely supported case and state the conflict in the warning.
+Never fabricate verified scope, filters, row grain or totals. Only an artifact
+that cannot open in Power BI Desktop justifies suppressing otherwise recoverable
+output; unsupported source constructs should be degraded visibly.
 
 1. **Calculated columns vs measures** — 3-factor classification:
    - Has aggregation (SUM, COUNT...) → measure
     - No aggregation + column references owned by one physical table →
        calculated column when row context is needed
-    - Unaggregated Tableau `role=measure` with references owned by multiple
-       physical tables → measure; unproved row/aggregation grain emits a
-       diagnostic `TODO`/`BLANK()` rather than guessed aggregation
+      - Unaggregated Tableau `role=measure` with references owned by multiple
+         physical tables → measure; when row/aggregation grain is unproved, emit
+         the most plausible executable aggregation with a `MigrationNote` that
+         states the inferred grain and unverified totals
    - No aggregation + no column refs → measure
 2. **RELATED()** — manyToOne cross-table refs only
 3. **LOOKUPVALUE()** — manyToMany cross-table refs only

@@ -243,8 +243,7 @@ class TestQuarterOffsetAndBooleanConversion(unittest.TestCase):
             column_name="R2", table_name="Facts", is_calc_column=True,
             column_table_map={"Date de début": "Facts"},
             validate_output=True, fallback_on_invalid=True)
-        self.assertIn("QUARTER('Facts'[Date de début])", dax)
-        self.assertIn('QUARTER(', dax)
+        self.assertIn("INT((MONTH('Facts'[Date de début]) - 1) / 3) + 1", dax)
         self.assertIn('ISBLANK(', dax)
         self.assertEqual(validate_dax_expression(dax), [])
         self.assertIsNone(_dax_to_m_expression(dax, "Facts"))

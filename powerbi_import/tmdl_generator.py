@@ -1825,11 +1825,13 @@ def _register_combined_group_calculation_bindings(
 
 
 def _collect_fixed_shelf_aggregations(datasources, extra_objects, *,
-                                      resolved_formulas=None):
+                                      resolved_formulas=None,
+                                      shelf_evidence=None):
     """Resolve consistent LOD shelf usage without crossing datasource identities."""
     datasource_aliases = {}
     calculation_aliases = {}
     calculations = {}
+    calculation_owners = {}
     resolved = {}
     supported = ('SUM', 'AVG', 'MIN', 'MAX')
     for datasource_index, datasource in enumerate(datasources):
@@ -1841,6 +1843,7 @@ def _collect_fixed_shelf_aggregations(datasources, extra_objects, *,
         aliases = calculation_aliases.setdefault(datasource_index, {})
         for calculation in datasource.get('calculations', []):
             calculations[id(calculation)] = calculation
+            calculation_owners[id(calculation)] = datasource_index
             for alias in _calculation_identity(calculation):
                 if alias:
                     aliases.setdefault(alias.casefold(), set()).add(id(calculation))
@@ -1882,10 +1885,50 @@ def _collect_fixed_shelf_aggregations(datasources, extra_objects, *,
             expanded = f'{outer}({target_formula})' if outer else target_formula
             resolved[identity] = (target_identity, expanded, outer)
 
+    formula_references = re.compile(
+        r'//[^\n]*|/\*[\s\S]*?\*/|"(?:""|\\.|[^"\\])*"|'
+        r"'(?:''|\\.|[^'\\])*'|"
+        r'(?:\[(?P<datasource>[^\]]+)\]\s*\.\s*)?\[(?P<raw>[^\]]+)\]')
+
+    direct_reference = re.compile(
+        r'\s*(?:(?:SUM|AVG|MIN|MAX)\s*\(\s*)?'
+        r'\[[^\]]+\]\s*\)?\s*', re.IGNORECASE)
+
+    def directly_referenced_fixed_roots(identity, datasource_index):
+        calculation = calculations.get(identity)
+        if calculation is None or calculation_owners.get(identity) != datasource_index:
+            return {}
+        formula = calculation.get('formula', '')
+        if direct_reference.fullmatch(formula):
+            return {}
+        roots = {}
+        for match in formula_references.finditer(formula):
+            raw = match.group('raw')
+            if raw is None:
+                continue
+            referenced_datasource = match.group('datasource')
+            if referenced_datasource:
+                owners = datasource_aliases.get(referenced_datasource.strip('[]'), set())
+                if owners != {datasource_index}:
+                    return {}
+            targets = calculation_aliases[datasource_index].get(raw.casefold(), set())
+            if not targets:
+                continue
+            if len(targets) != 1:
+                return {}
+            target = next(iter(targets))
+            if target not in resolved:
+                return {}
+            root, _, outer = resolved[target]
+            if root in roots and roots[root] != outer:
+                return {}
+            roots[root] = outer
+        return roots
+
     usages = {}
     for worksheet_key in ('worksheets', '_worksheets'):
-        for worksheet in extra_objects.get(worksheet_key, []):
-            for field in worksheet.get('fields', []):
+        for worksheet_index, worksheet in enumerate(extra_objects.get(worksheet_key, [])):
+            for field_index, field in enumerate(worksheet.get('fields', [])):
                 name = field.get('name')
                 if not isinstance(name, str) or not name:
                     continue
@@ -1899,33 +1942,81 @@ def _collect_fixed_shelf_aggregations(datasources, extra_objects, *,
                         calculation_aliases[owner].get(name.casefold(), set()))
                 if ('aggregation_candidates' in field
                         or 'aggregation_evidence' in field):
-                    evidence = field.get('aggregation_candidates')
-                    aggregation = (evidence[0] if
-                        field.get('aggregation_evidence') == 'explicit'
-                        and isinstance(evidence, list) and len(evidence) == 1
-                        else None)
+                    candidates_evidence = field.get('aggregation_candidates')
+                    evidence_kind = field.get('aggregation_evidence')
+                    aggregation = (
+                        candidates_evidence[0]
+                        if evidence_kind in ('explicit', 'inferred')
+                        and isinstance(candidates_evidence, list)
+                        and len(candidates_evidence) == 1 else None)
+                    aggregation_evidence = (
+                        'explicit' if evidence_kind == 'explicit' else
+                        'inferred' if evidence_kind == 'inferred' else None)
                 else:
                     aggregation = field.get('aggregation')
+                    aggregation_evidence = 'explicit'
                 aggregation = (aggregation.strip().upper()
                                if isinstance(aggregation, str) else None)
                 if (len(owners) != 1 or len(candidates) != 1
                         or aggregation not in supported):
                     aggregation = None
                 for candidate in candidates:
-                    root, _, outer = resolved.get(candidate, (candidate, '', ''))
-                    if outer and outer != aggregation:
-                        aggregation = None
-                    usages.setdefault(root, set()).add(aggregation)
+                    if candidate in resolved:
+                        root, _, outer = resolved[candidate]
+                        roots = {root: outer}
+                    elif len(owners) == 1:
+                        roots = directly_referenced_fixed_roots(
+                            candidate, next(iter(owners)))
+                    else:
+                        roots = {}
+                    for root, outer in roots.items():
+                        candidate_aggregation = aggregation
+                        candidate_evidence = aggregation_evidence
+                        if outer and outer != candidate_aggregation:
+                            candidate_evidence = 'conflicting'
+                            candidate_aggregation = outer
+                        usage_key = (
+                            worksheet.get('name', ''), worksheet_index,
+                            field_index, datasource or '', name.casefold())
+                        usages.setdefault(root, {})[usage_key] = (
+                            candidate_aggregation, candidate_evidence)
 
     result = {}
     for identity, (root, formula, outer) in resolved.items():
-        aggregations = usages.get(root, set())
-        if len(aggregations) != 1 or None in aggregations:
-            continue
-        aggregation = next(iter(aggregations))
-        if outer and outer != aggregation:
-            continue
+        usages_for_root = list(usages.get(root, {}).values())
+        aggregation_counts = {}
+        for aggregation, _ in usages_for_root:
+            if aggregation in supported:
+                aggregation_counts[aggregation] = aggregation_counts.get(aggregation, 0) + 1
+        if not aggregation_counts:
+            aggregation = outer or 'SUM'
+            evidence = (
+                'conflicting'
+                if any(item_evidence in ('explicit', 'conflicting')
+                       for _, item_evidence in usages_for_root)
+                else 'inferred')
+        else:
+            best_count = max(aggregation_counts.values())
+            most_common = [aggregation for aggregation, count in aggregation_counts.items()
+                           if count == best_count]
+            aggregation = (outer if outer in aggregation_counts else
+                           'SUM' if 'SUM' in most_common else
+                           next(name for name in supported if name in most_common))
+            evidence = 'explicit' if (
+                len(aggregation_counts) == 1
+                and all(item_evidence == 'explicit'
+                        for item_aggregation, item_evidence in usages_for_root
+                        if item_aggregation in supported)
+                and all(item_aggregation in supported
+                        for item_aggregation, _ in usages_for_root)
+            ) else (
+                'conflicting' if len(aggregation_counts) > 1 or any(
+                    item_evidence == 'conflicting'
+                    for _, item_evidence in usages_for_root)
+                else 'inferred')
         result[identity] = aggregation
+        if shelf_evidence is not None:
+            shelf_evidence[identity] = evidence
         if resolved_formulas is not None:
             resolved_formulas[identity] = formula
     return result
@@ -2459,8 +2550,10 @@ def _collect_semantic_context(datasources, extra_objects):
             "identities to proof objects")
 
     fixed_shelf_formulas = {}
+    fixed_shelf_evidence = {}
     fixed_shelf_aggregations = _collect_fixed_shelf_aggregations(
-        datasources, extra_objects, resolved_formulas=fixed_shelf_formulas)
+        datasources, extra_objects, resolved_formulas=fixed_shelf_formulas,
+        shelf_evidence=fixed_shelf_evidence)
     fixed_shelf_calc_maps = {}
     fixed_shelf_column_maps = {}
     fixed_shelf_measure_names = {}
@@ -2509,6 +2602,7 @@ def _collect_semantic_context(datasources, extra_objects):
         'datasource_table_map': datasource_table_map,
         'verified_fixed_scopes': verified_fixed_scopes,
         'fixed_shelf_aggregations': fixed_shelf_aggregations,
+        'fixed_shelf_evidence': fixed_shelf_evidence,
         'fixed_shelf_formulas': fixed_shelf_formulas,
         'fixed_shelf_calc_maps': fixed_shelf_calc_maps,
         'fixed_shelf_column_maps': fixed_shelf_column_maps,
@@ -4226,6 +4320,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             fixed_shelf_aggregation=(
                 dax_context.get('fixed_shelf_aggregations', {}).get(id(calc))
                 if not is_calc_col else None),
+                fixed_shelf_evidence=dax_context.get(
+                    'fixed_shelf_evidence', {}).get(id(calc), 'explicit'),
             lod_shelf_aggregation=(
                 dax_context.get('fixed_shelf_aggregations', {}).get(id(calc))
                 if not is_calc_col else None),
@@ -4239,17 +4335,38 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                      or 'approximation; source filter scope' in dax_formula)):
             local_columns = dax_context.get('fixed_shelf_column_maps', {}).get(
                 id(calc), {})
+            fixed_column_table_map = dict(local_columns)
+            fixed_table_columns = {
+                name for name, owner in local_columns.items()
+                if owner == table_name
+            }
+            for candidate in calculations:
+                candidate_name, candidate_caption = _calculation_identity(candidate)
+                candidate_target = dax_context.get(
+                    'calculation_target_names', {}).get(id(candidate), candidate_caption)
+                if not ({candidate_name, candidate_caption, candidate_target}
+                        & (prelim_calc_col_raws | prelim_calc_col_captions)):
+                    continue
+                candidate_type = map_tableau_to_powerbi_type(
+                    candidate.get('datatype', ''))
+                if candidate_type not in ('Int64', 'Double', 'Decimal', 'Currency'):
+                    continue
+                for alias in (candidate_name, candidate_caption, candidate_target):
+                    if alias:
+                        fixed_table_columns.add(alias)
+                        fixed_column_table_map[alias] = table_name
             dax_formula = convert_tableau_formula_to_dax(
                 fixed_formula, column_name=calc_name, table_name=table_name,
                 calc_map=dax_context.get('fixed_shelf_calc_maps', {}).get(id(calc)),
-                column_table_map=local_columns,
+                column_table_map=fixed_column_table_map,
                 measure_names=dax_context.get('fixed_shelf_measure_names', {}).get(
                     id(calc), set()),
-                table_columns={name for name, owner in local_columns.items()
-                               if owner == table_name},
+                table_columns=fixed_table_columns,
                 numeric_columns=_numeric_table_columns,
                 validate_output=True, fallback_on_invalid=True,
                 fixed_shelf_aggregation=fixed_shelf,
+                fixed_shelf_evidence=dax_context.get(
+                    'fixed_shelf_evidence', {}).get(id(calc), 'explicit'),
                 lod_shelf_aggregation=fixed_shelf,
             )
         if source_conflict_path:
@@ -4305,12 +4422,36 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if conversion_failure else ''
         )
         fixed_approximation = re.match(
-            r'/\*\s*(shelf \((?:sum|avg|min|max):\) approximation; '
-            r'source filter scope and totals unverified)\s*\*/', dax_formula,
+            r'/\*\s*(shelf \((?:sum|avg|min|max):(?: inferred| chosen from conflicting evidence)?\) '
+            r'approximation; [^*]+)\s*\*/', dax_formula,
             re.IGNORECASE,
         )
         if fixed_approximation:
             migration_note = 'FIXED ' + fixed_approximation.group(1)
+            logger.warning("%s for '%s' on table '%s'",
+                           migration_note, calc_name, table_name)
+        fixed_ratio_approximation = re.match(
+            r'/\*\s*(FIXED best-effort approximation; [^*]+)\s*\*/',
+            dax_formula, re.IGNORECASE,
+        )
+        if fixed_ratio_approximation:
+            migration_note = fixed_ratio_approximation.group(1).strip()
+            logger.warning("%s for '%s' on table '%s'",
+                           migration_note, calc_name, table_name)
+        running_approximation = re.match(
+            r'/\*\s*(Table-calculation best-effort approximation; [^*]+)\s*\*/',
+            dax_formula, re.IGNORECASE,
+        )
+        if running_approximation:
+            migration_note = running_approximation.group(1)
+            logger.warning("%s for '%s' on table '%s'",
+                           migration_note, calc_name, table_name)
+        scalar_approximation = re.search(
+            r'/\*\s*((?:DATEDIFF|SPLIT) best-effort approximation; [^*]+)\s*\*/',
+            dax_formula, re.IGNORECASE,
+        )
+        if scalar_approximation:
+            migration_note = scalar_approximation.group(1).strip()
             logger.warning("%s for '%s' on table '%s'",
                            migration_note, calc_name, table_name)
 
@@ -4443,7 +4584,8 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             }
             if migration_note:
                 bim_measure['_migration_note'] = migration_note
-                if fixed_approximation:
+                if (fixed_approximation or fixed_ratio_approximation
+                    or running_approximation or scalar_approximation):
                     bim_measure['annotations'] = [{
                         'name': 'MigrationNote', 'value': migration_note,
                     }]
@@ -4456,8 +4598,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             if original_formula:
                 bim_measure['_original_formula'] = original_formula
             if fixed_approximation:
-                identity = bim_measure.pop('_tableau_calculation_identity')
-                bim_measure.pop('_original_formula', None)
+                identity = bim_measure['_tableau_calculation_identity']
                 bim_measure['annotations'].extend([
                     {'name': 'TableauOriginalFormula', 'value': original_formula},
                     {'name': 'TableauCalculationIdentity',

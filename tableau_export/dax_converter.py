@@ -7,6 +7,7 @@ Converts Tableau calculation formulas to valid DAX expressions.
 
 import logging
 import re
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,7 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
                                     verified_row_scope=None,
                                     verified_fixed_scope=None,
                                     fixed_shelf_aggregation=None,
+                                    fixed_shelf_evidence='explicit',
                                     date_columns=None,
                                     lod_shelf_aggregation=None,
                                     numeric_columns=None,
@@ -289,6 +291,8 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
         fixed_shelf_aggregation: Independently resolved SUM/AVG/MIN/MAX shelf
             enabling a bounded physical-column FIXED approximation when exact
             proof is unavailable. Source filter scope and totals stay unverified.
+        fixed_shelf_evidence: ``explicit``, ``inferred`` or ``conflicting``;
+            non-explicit evidence is called out in the approximation comment.
         lod_shelf_aggregation: Explicit SUM/AVG/MIN/MAX shelf evidence for a
             bounded INCLUDE approximation. It never authorizes an inferred shelf.
         date_columns: Optional collection of local physical column names proven
@@ -416,16 +420,32 @@ def convert_tableau_formula_to_dax(formula, column_name='Measure', table_name='T
             source_masked, source_restore, table_name=table_name,
             column_table_map=column_table_map, measure_names=measure_names,
             table_columns=table_columns, is_calc_column=is_calc_column,
-            shelf=fixed_shelf_aggregation, calc_map=calc_map)
+            shelf=fixed_shelf_aggregation, calc_map=calc_map,
+            shelf_evidence=fixed_shelf_evidence)
         if approximation is not None:
             return approximation
+        ratio_approximation = _compile_approximate_fixed_aggregate_ratio(
+            masked, restore, table_name=table_name,
+            column_table_map=column_table_map, measure_names=measure_names,
+            table_columns=table_columns, is_calc_column=is_calc_column,
+        )
+        if ratio_approximation is not None:
+            return ratio_approximation
         return _unsupported_conversion(
             'FIXED shelf approximation requires supported single-table '
             'physical dimensions and a direct physical-column aggregation')
-    if table_columns is not None and re.search(r'\{\s*FIXED\b', masked, re.IGNORECASE):
-        return _unsupported_conversion(
-            'FIXED requires verified source filter scope, dimension grain, '
-            'shelf aggregation and total grain')
+    if re.search(r'\{\s*FIXED\b', masked, re.IGNORECASE):
+        approximation = _compile_approximate_fixed_aggregate_ratio(
+            masked, restore, table_name=table_name,
+            column_table_map=column_table_map, measure_names=measure_names,
+            table_columns=table_columns, is_calc_column=is_calc_column,
+        )
+        if approximation is not None:
+            return approximation
+        if table_columns is not None:
+            return _unsupported_conversion(
+                'FIXED requires verified source filter scope, dimension grain, '
+                'shelf aggregation and total grain')
     if _aggregate_contains_lod(masked):
         return _unsupported_conversion(
             'aggregation of a level-of-detail expression requires its source '
@@ -1048,15 +1068,120 @@ def _compile_verified_fixed_sum(masked, restore, *, table_name, column_table_map
     return f"SUMX(SUMMARIZE({table}, {keys}), CALCULATE(MIN({column(value[3])})))"
 
 
+def _compile_approximate_fixed_aggregate_ratio(
+        masked, restore, *, table_name, column_table_map, measure_names,
+        table_columns, is_calc_column):
+    """Best-effort lowering for FIXED ratios of local aggregate columns."""
+    if is_calc_column or not isinstance(table_name, str) or not table_name:
+        return None
+    match = re.fullmatch(
+        r'\s*\{\s*FIXED\s+(?P<dims>[^:{}()]+)\s*:\s*'
+        r'(?P<body>[^{}]+)\}\s*',
+        masked, re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    try:
+        dimensions = [
+            _ungroup_source(_SourceExpressionParser(restore(part)).parse())
+            for part in _split_args(match.group('dims'))
+        ]
+        body = _ungroup_source(
+            _SourceExpressionParser(restore(match.group('body')).strip()).parse())
+    except (_SourceExpressionError, RecursionError):
+        return None
+    if (not dimensions or any(node[0] != 'ref' for node in dimensions)
+            or body[0] != 'op' or body[1] != '/'):
+        return None
+    dimensions = cast(list[tuple[str, str, str | None, str]], dimensions)
+    body = cast(tuple[str, str, object, object], body)
+
+    aggregates = {'SUM': 'SUM', 'AVG': 'AVERAGE', 'AVERAGE': 'AVERAGE',
+                  'MIN': 'MIN', 'MAX': 'MAX'}
+
+    def aggregate_reference(
+            node: object) -> tuple[str, tuple[str, str, str | None, str]] | None:
+        parsed = _ungroup_source(node)
+        if not isinstance(parsed, tuple) or len(parsed) != 3 or parsed[0] != 'call':
+            return None
+        call = cast(tuple[str, str, tuple[object, ...]], parsed)
+        if len(call[2]) != 1:
+            return None
+        function = aggregates.get(call[1].upper())
+        argument = _ungroup_source(call[2][0])
+        if (function is None or not isinstance(argument, tuple)
+                or len(argument) != 4 or argument[0] != 'ref'):
+            return None
+        argument = cast(tuple[str, str, str | None, str], argument)
+        return function, argument
+
+    numerator = aggregate_reference(body[2])
+    denominator_node = _ungroup_source(body[3])
+    if (isinstance(denominator_node, tuple) and len(denominator_node) == 3
+            and denominator_node[0] == 'call'
+            and denominator_node[1].upper() == 'NULLIF'):
+        nullif = cast(tuple[str, str, tuple[object, ...]], denominator_node)
+        if (len(nullif[2]) != 2
+                or _ungroup_source(nullif[2][1]) != ('atom', '0')):
+            return None
+        denominator_node = _ungroup_source(nullif[2][0])
+    denominator = aggregate_reference(denominator_node)
+    if numerator is None or denominator is None:
+        return None
+
+    available = (set(table_columns) if isinstance(
+        table_columns, (list, tuple, set, frozenset)) else None)
+    measures = {name.casefold() for name in (measure_names or ())
+                if isinstance(name, str)}
+    resolved_names = []
+    for node in [*dimensions, numerator[1], denominator[1]]:
+        owner, name = node[2], node[3]
+        mapped_owner = column_table_map.get(name) if isinstance(column_table_map, dict) else None
+        if (owner is not None and owner != table_name
+                or mapped_owner is not None and mapped_owner != table_name
+                or available is not None and name not in available
+                or name.casefold() in measures):
+            return None
+        resolved_names.append(name)
+    dimension_names = resolved_names[:len(dimensions)]
+    if len({name.casefold() for name in dimension_names}) != len(dimension_names):
+        return None
+
+    safe_table = "'" + table_name.replace("'", "''") + "'"
+
+    def column(name):
+        return safe_table + '[' + name.replace(']', ']]') + ']'
+
+    keys = ', '.join(column(name) for name in dimension_names)
+    note = (
+        'FIXED best-effort approximation; source filters, aggregation scope '
+        'and total grain unverified'
+    )
+    result = (
+        f'/* {note} */ CALCULATE('
+        f'DIVIDE({numerator[0]}({column(numerator[1][3])}), '
+        f'{denominator[0]}({column(denominator[1][3])})), '
+        f'ALLEXCEPT({safe_table}, {keys}))'
+    )
+    try:
+        from powerbi_import.dax_validator import validate_dax_expression
+        if validate_dax_expression(result):
+            return None
+    except (ImportError, OSError, ValueError):
+        return None
+    return result
+
+
 def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
                                      column_table_map, measure_names,
                                      table_columns, is_calc_column, shelf,
-                                     calc_map=None):
+                                     calc_map=None, shelf_evidence='explicit'):
     """Approximate a resolved shelf over distinct, physically bound FIXED keys."""
     from typing import cast
 
     iterators = {'SUM': 'SUMX', 'AVG': 'AVERAGEX', 'MIN': 'MINX', 'MAX': 'MAXX'}
-    if not isinstance(shelf, str):
+    if (not isinstance(shelf, str)
+            or shelf_evidence not in ('explicit', 'inferred', 'conflicting')):
         return None
     shelf = shelf.strip().upper()
     if (shelf not in iterators or is_calc_column
@@ -1135,9 +1260,18 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
     domain = (f'VALUES({keys})' if len(names) == 1
               else f'SUMMARIZE({table}, {keys})')
     inner = aggregates[aggregate[1].upper()] + '(' + column(value[3]) + ')'
+    if shelf_evidence == 'inferred':
+        note = (f'shelf ({shelf.lower()}: inferred) approximation; aggregation '
+                'inferred, source filter scope and totals unverified')
+    elif shelf_evidence == 'conflicting':
+        note = (f'shelf ({shelf.lower()}: chosen from conflicting evidence) '
+                'approximation; aggregation conflict, source filter scope and '
+                'totals unverified')
+    else:
+        note = (f'shelf ({shelf.lower()}:) approximation; source filter scope '
+                'and totals unverified')
     expression = (
-        f'/* shelf ({shelf.lower()}:) approximation; source filter scope and '
-        f'totals unverified */ {iterators[shelf]}({domain}, CALCULATE({inner}))')
+        f'/* {note} */ {iterators[shelf]}({domain}, CALCULATE({inner}))')
     try:
         from powerbi_import.dax_validator import validate_dax_expression
         if validate_dax_expression(expression):
@@ -2305,9 +2439,9 @@ def _convert_datediff(dax_str):
     }
 
     def convert(args, inner, restore):
-        if len(args) != 3:
+        if len(args) < 3:
             return _unsupported_conversion(
-                'DATEDIFF requires exactly three arguments')
+            'DATEDIFF requires at least three arguments')
         interval_arg = restore(args[0]).strip()
         if (len(interval_arg) < 2
                 or interval_arg[0] not in ('"', "'")
@@ -2315,14 +2449,20 @@ def _convert_datediff(dax_str):
             return _unsupported_conversion(
                 'DATEDIFF requires a supported literal interval')
         interval = interval_arg[1:-1].upper()
+        start = restore(args[1]).strip()
+        end = restore(args[2]).strip()
         if interval == 'WEEK':
+            return (
+                '/* DATEDIFF best-effort approximation; WEEK uses 7-day '
+                'buckets, week-start and extra arguments unverified */ '
+                f'QUOTIENT(DATEDIFF({start}, {end}, DAY), 7)'
+            )
+        if len(args) != 3:
             return _unsupported_conversion(
-                'DATEDIFF week requires verified week-start semantics')
+                'DATEDIFF extra arguments are unsupported for this interval')
         if interval not in supported_intervals:
             return _unsupported_conversion(
                 'DATEDIFF requires a supported literal interval')
-        start = restore(args[1]).strip()
-        end = restore(args[2]).strip()
         return f"DATEDIFF({start}, {end}, {interval})"
 
     return _transform_date_func_call(dax_str, 'DATEDIFF', convert)
@@ -2951,9 +3091,11 @@ def _convert_proper(dax):
 
 
 def _convert_split(dax):
-    """SPLIT(string, delimiter, token_number) → guarded PATHITEM expression.
+    """SPLIT(string, delimiter, token_number) → best-effort PATHITEM expression.
 
-    Negative token indexes count from the end using PATHITEMREVERSE.
+    Negative token indexes count from the end using PATHITEMREVERSE. Power BI's
+    PATHITEM uses ``|`` as its path separator, so values containing ``|`` may
+    be split differently when Tableau's delimiter is another character.
     """
     def _xf(args, inner):
         if len(args) >= 2:
@@ -2981,11 +3123,14 @@ def _convert_split(dax):
             if is_string_literal and delim[1:-1] == '|':
                 result = direct_item
             else:
-                collision_guard = f'IF(CONTAINSSTRING({s}, "|"), BLANK(), {substituted_item})'
                 if is_string_literal:
-                    result = collision_guard
+                    result = substituted_item
                 else:
-                    result = f'IF({delim} = "|", {direct_item}, {collision_guard})'
+                    result = f'IF({delim} = "|", {direct_item}, {substituted_item})'
+                result = (
+                    '/* SPLIT best-effort approximation; values containing '
+                    'the reserved | separator may be mis-split */ ' + result
+                )
             return f'IF(ISBLANK({s}), BLANK(), {result})'
         return f'/* SPLIT({inner}): insufficient arguments */ BLANK()'
     return _transform_func_call(dax, 'SPLIT', _xf)
@@ -4806,32 +4951,22 @@ def _convert_rank_functions(dax, table_name, compute_using=None, column_table_ma
 
 
 def _convert_running_functions(dax, table_name, table_calc_context=None):
-    """Fail closed on running table calculations with context-aware diagnostics."""
+    """Emit a warned visible-row aggregate when running semantics are unknown."""
     for tab_func in (
             'RUNNING_SUM', 'RUNNING_AVG', 'RUNNING_COUNT',
             'RUNNING_MAX', 'RUNNING_MIN'):
         def convert(args, inner, restore):
-            if re.search(
-                    r'\b(?:COUNTD|DISTINCTCOUNTNOBLANK)\s*\(',
-                    inner, re.IGNORECASE):
-                logger.warning(
-                    "%s of COUNTD requires Tableau mark ordering and partitioning; "
-                    "the calculation was not converted", tab_func,
-                )
-                return (
-                    f"/* TODO: {tab_func} of COUNTD requires Tableau mark ordering "
-                    "plus partitioning */ BLANK()"
-                )
-            if table_calc_context is None:
-                return _unsupported_conversion(
-                    'running table calculation requires verified ordering and partition context')
-            if isinstance(table_calc_context, dict) and table_calc_context.get('order_by'):
-                return _unsupported_conversion(
-                    'running table calculation requires verification of mark grain, '
-                    'unique ordering, tie behavior, partitioning and totals')
-            return _unsupported_conversion(
-                'running table calculation requires a resolved order; mark grain, '
-                'partitioning and totals also require verification')
+            safe_table_name = str(table_name).replace("'", "''")
+            note = (
+                'Table-calculation best-effort approximation; visible-row aggregate '
+                'is not a verified cumulative result; mark grain, row order, '
+                'partition, source filters and totals unverified'
+            )
+            logger.warning("%s; %s", tab_func, note)
+            return (
+                f"/* {note} */ CALCULATE({inner}, "
+                f"FILTER(ALLSELECTED('{safe_table_name}'), TRUE()))"
+            )
 
         dax = _transform_date_func_call(dax, tab_func, convert)
     return dax

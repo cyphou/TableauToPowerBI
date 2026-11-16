@@ -1,1 +1,1 @@
-/* TODO: DAX conversion validation failed for measure: running table calculation requires verified ordering && partition context */ BLANK()
+/* Table-calculation best-effort approximation; visible-row aggregate is not a verified cumulative result; mark grain, row order, partition, source filters && totals unverified */ CALCULATE(SUM('Table'[Sales]), FILTER(ALLSELECTED('Table'), TRUE()))

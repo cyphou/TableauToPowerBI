@@ -42,7 +42,7 @@ class TestSplitConversion(unittest.TestCase):
         self.assertIn('PATHITEM', result)
         self.assertIn('SUBSTITUTE', result)
         self.assertIn('ISBLANK', result)
-        self.assertIn('CONTAINSSTRING', result)
+        self.assertIn('SPLIT best-effort approximation', result)
         self.assertIn('"|"', result)
 
     def test_split_two_args(self):

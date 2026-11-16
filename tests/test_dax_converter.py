@@ -790,19 +790,20 @@ class TestCountdNullSemantics(unittest.TestCase):
             '"COUNTD(example)"',
         )
 
-    def test_running_countd_requires_tableau_mark_scope(self):
+    def test_running_countd_emits_warned_visible_row_approximation(self):
         for running in ('RUNNING_SUM', 'RUNNING_COUNT', 'RUNNING_AVG'):
             with self.subTest(running=running):
                 with self.assertLogs(convert_tableau_formula_to_dax.__module__,
                                      level="WARNING"):
                     result = convert_tableau_formula_to_dax(
                         f'{running}(COUNTD([Customer]))', table_name="Orders")
-                self.assertIn('TODO', result)
-                self.assertIn('mark ordering plus partitioning', result)
-                self.assertIn('BLANK()', result)
-                self.assertNotIn('DISTINCTCOUNTNOBLANK', result)
+                self.assertIn('DISTINCTCOUNTNOBLANK', result)
+                self.assertIn("ALLSELECTED('Orders')", result)
+                self.assertIn('not a verified cumulative result', result)
+                self.assertIn('partition', result)
+                self.assertNotRegex(result, r'\*/\s*BLANK\(\)\s*$')
 
-    def test_running_sum_order_metadata_does_not_prove_mark_grain(self):
+    def test_running_sum_order_metadata_keeps_approximation_warning(self):
         result = convert_tableau_formula_to_dax(
             'RUNNING_SUM(SUM([Sales]))',
             table_name='Fact',
@@ -817,12 +818,12 @@ class TestCountdNullSemantics(unittest.TestCase):
                 'at_level': '',
             },
         )
-        self.assertIn('TODO', result)
-        self.assertIn('BLANK()', result)
+        self.assertIn('CALCULATE', result)
+        self.assertIn("ALLSELECTED('Fact')", result)
         self.assertIn('mark grain', result)
-        self.assertIn('unique ordering', result)
-        self.assertNotIn('CALCULATE', result)
-        self.assertNotIn('ALLSELECTED', result)
+        self.assertIn('row order', result)
+        self.assertIn('not a verified cumulative result', result)
+        self.assertNotIn('BLANK()', result)
         self.assertNotIn('__SortColumn__', result)
 
     def test_countd_text_inside_running_formula_is_not_treated_as_a_call(self):
@@ -830,9 +831,10 @@ class TestCountdNullSemantics(unittest.TestCase):
             'RUNNING_SUM(IF [Caption] = "COUNTD(example)" THEN 1 ELSE 0 END)',
             table_name="Orders",
         )
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('mark ordering plus partitioning', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn('COUNTD(example)', result)
+        self.assertNotIn('TODO: DAX conversion validation failed', result)
+        self.assertNotIn('BLANK()', result)
 
 
 class TestLeftRightNullAndLengthSemantics(unittest.TestCase):
@@ -1293,18 +1295,20 @@ class TestTableCalcConversions(unittest.TestCase):
             "RUNNING_SUM(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_running_avg(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_AVG(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_rank(self):
         result = convert_tableau_formula_to_dax(
@@ -2150,13 +2154,13 @@ class TestSpecialConverterFunctions(unittest.TestCase):
         result = convert_tableau_formula_to_dax("SPLIT([Name], ' ', 1)")
         self.assertIsInstance(result, str)
 
-    def test_split_guards_reserved_pipe_for_other_delimiters(self):
+    def test_split_warns_on_reserved_pipe_for_other_delimiters(self):
         result = convert_tableau_formula_to_dax('SPLIT([Data], "-", 2)')
 
-        self.assertRegex(
-            result,
-            r'IF\(CONTAINSSTRING\(\'Table\'\[Data\], "\|"\),\s*BLANK\(\),\s*PATHITEM\(SUBSTITUTE\(\'Table\'\[Data\], "-", "\|"\), 2\)\)',
-        )
+        self.assertIn('SPLIT best-effort approximation', result)
+        self.assertIn('may be mis-split', result)
+        self.assertIn('PATHITEM(SUBSTITUTE(\'Table\'[Data], "-", "|"), 2)', result)
+        self.assertNotIn('IF(CONTAINSSTRING(', result)
 
     def test_split_uses_source_when_delimiter_is_pipe(self):
         result = convert_tableau_formula_to_dax('SPLIT([Data], "|", 2)')
@@ -2164,13 +2168,12 @@ class TestSpecialConverterFunctions(unittest.TestCase):
         self.assertIn("PATHITEM('Table'[Data], 2)", result)
         self.assertNotIn("CONTAINSSTRING", result)
 
-    def test_split_negative_index_guards_reserved_pipe(self):
+    def test_split_negative_index_warns_on_reserved_pipe(self):
         result = convert_tableau_formula_to_dax('SPLIT([Data], "-", -2)')
 
-        self.assertRegex(
-            result,
-            r'IF\(CONTAINSSTRING\(\'Table\'\[Data\], "\|"\),\s*BLANK\(\),\s*PATHITEMREVERSE\(SUBSTITUTE\(\'Table\'\[Data\], "-", "\|"\), 2\)\)',
-        )
+        self.assertIn('SPLIT best-effort approximation', result)
+        self.assertIn('PATHITEMREVERSE(SUBSTITUTE(\'Table\'[Data], "-", "|"), 2)', result)
+        self.assertNotIn('IF(CONTAINSSTRING(', result)
 
     def test_find(self):
         result = convert_tableau_formula_to_dax("FIND([Name], 'test')")
@@ -2207,27 +2210,30 @@ class TestTableCalcExpanded(unittest.TestCase):
             "RUNNING_COUNT(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_running_max(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_MAX(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_running_min(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_MIN(SUM([Sales]))",
             table_name="Orders",
         )
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_rank_dense(self):
         result = convert_tableau_formula_to_dax(

@@ -164,13 +164,14 @@ calculations are retained. The extraction boundary is implemented in
 and conflict propagation are in
 [`tmdl_generator.py`](../powerbi_import/tmdl_generator.py).
 
-FIXED compilation prioritizes the unchanged exact-proof path. Its bounded
-fallback requires an explicit, consistent SUM/AVG/MIN/MAX shelf, all physical
-keys resolved in one table and a direct-column inner aggregate; it emits an
-iterator with a warning naming the inferred shelf and unverified filters/totals.
-Inferred/default SUM is not evidence. Bounded same-datasource one-hop references
-are supported, not arbitrary products, conditional inner aggregates or nested
-LOD. Missing or ambiguous evidence retains annotated `TODO`/`BLANK()`. See the
+FIXED compilation prioritizes the unchanged exact-proof path. Otherwise it emits
+the most plausible bounded iterator: explicit or inferred SUM/AVG/MIN/MAX over
+resolved keys, a same-table numeric row-calculated value, or a directly composed
+same-datasource consumer. Shelf conflicts choose the observed majority, then SUM
+on a tie. Every approximation labels inferred/conflicting evidence and
+unverified filters/totals in DAX and `MigrationNote`; it is not exact or native
+parity. Complex consumer chains, unresolved ownership or invalid DAX remain
+diagnostic. See the
 [DAX policy](TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions).
 These are static producer/consumer contracts, not native execution or value-parity
 evidence.

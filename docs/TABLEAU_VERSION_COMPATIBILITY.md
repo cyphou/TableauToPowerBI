@@ -61,13 +61,12 @@ See [known limitations](KNOWN_LIMITATIONS.md) and the
 | Table calculations (RUNNING, RANK, WINDOW) | All | ⚠️ Approximated |
 
 The [FIXED policy](TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions)
-keeps exact-proof requirements unchanged. Its fallback requires an explicit,
-consistent SUM/AVG/MIN/MAX shelf, all physical FIXED keys resolved in one table,
-and a bounded direct-column inner aggregate. Warnings disclose the inferred
-shelf and unverified filters/totals; inferred/default SUM is not shelf evidence.
-Bounded same-datasource one-hop references do not imply arbitrary product,
-conditional or nested-LOD support. Missing or ambiguous evidence remains
-annotated `TODO`/`BLANK()`, not a version-wide success claim.
+keeps exact-proof requirements unchanged, then emits a best-effort iterator
+when a plausible key/value binding exists. Explicit, inferred/default, and
+conflicting shelf choices are distinguished in warnings; same-table numeric
+row calculations and direct same-datasource consumers are supported. Complex
+chains and unresolved ownership remain diagnostic. No version-wide success,
+native execution or value-parity claim follows from the static approximation.
 
 ### Data Sources
 

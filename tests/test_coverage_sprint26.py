@@ -623,9 +623,10 @@ class TestDaxRoundTrip(unittest.TestCase):
 
     def test_running_sum(self):
         result = self._convert('RUNNING_SUM(SUM([Sales]))')
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn('not a verified cumulative result', result)
+        self.assertIn("CALCULATE(SUM('Table'[Sales])", result)
+        self.assertNotIn('TODO: DAX conversion validation failed', result)
 
     def test_rank(self):
         result = self._convert('RANK(SUM([Sales]))')

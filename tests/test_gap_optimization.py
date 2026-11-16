@@ -308,7 +308,10 @@ class TestSplitPathitem(unittest.TestCase):
         result = convert_tableau_formula_to_dax('SPLIT([Email], "@", 2)')
         self.assertIn('PATHITEM', result)
         self.assertIn('SUBSTITUTE', result)
-        self.assertNotIn('BLANK', result)
+        self.assertIn('SPLIT best-effort approximation', result)
+        self.assertIn('reserved | separator may be mis-split', result)
+        self.assertIn('IF(ISBLANK(', result)
+        self.assertNotIn('IF(CONTAINSSTRING(', result)
 
     def test_split_2_args(self):
         result = convert_tableau_formula_to_dax('SPLIT([Name], " ")')

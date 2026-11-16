@@ -266,14 +266,14 @@ calculations remain available; unknown ownership is not assigned by first match.
 |----------|---------|-----|
 | Null/Logic | ISNULL, ZN, IFNULL | ISBLANK, IF(ISBLANK) |
 | Text | CONTAINS, ASCII, LEN, LEFT, RIGHT, MID, UPPER, LOWER, REPLACE, TRIM | CONTAINSSTRING, UNICODE, LEN, LEFT, RIGHT, MID, UPPER, LOWER, SUBSTITUTE, TRIM |
-| Date | DATETRUNC, DATEPART, DATEDIFF, DATEADD, TODAY, NOW | STARTOF*, YEAR/MONTH/DAY/HOUR/MINUTE/SECOND, scalar quarter; DATEDIFF reorders only known literal intervals and diagnoses unknown/dynamic ones; scalar DATEADD supports mapped parts only; TODAY, NOW; week-related parts remain diagnostic without verified week-start semantics |
+| Date | DATETRUNC, DATEPART, DATEDIFF, DATEADD, TODAY, NOW | STARTOF*, YEAR/MONTH/DAY/HOUR/MINUTE/SECOND, scalar quarter; DATEDIFF reorders supported literal intervals, diagnoses unknown/dynamic ones, and warns on a 7-day WEEK approximation; scalar DATEADD supports mapped parts only; TODAY, NOW |
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP, SIN, COS, TAN | identical or mapped |
 | Stats | MEDIAN, STDEV, STDEVP, VAR, VARP, PERCENTILE, CORR, COVAR | MEDIAN, STDEV.S, STDEV.P, VAR.S, VAR.P, PERCENTILE.INC, CORREL, COVARIANCE.S |
 | Conversion | INT, FLOAT, STR, DATE, DATETIME | INT, CONVERT, FORMAT; unary DATE/DATETIME use typed CONVERT expressions, unsupported arities diagnose, and the DAX DATE(year, month, day) constructor is preserved |
-| LOD | {FIXED dims : AGG} | Exact DAX with verified scope; otherwise a resolved SUM/AVG/MIN/MAX shelf can emit an annotated iterator over physical FIXED keys; unresolved cases retain TODO/BLANK |
-| LOD | {INCLUDE dims : AGG} | Annotated iterator only with explicit SUM/AVG/MIN/MAX shelf evidence and resolved same-table physical numeric keys/values; otherwise diagnostic TODO/BLANK |
+| LOD | {FIXED dims : AGG} | Exact DAX with verified scope; otherwise emit the most plausible annotated SUM/AVG/MIN/MAX iterator, marking inferred/conflicting shelf, row-column and total assumptions |
+| LOD | {INCLUDE dims : AGG} | Prefer an annotated same-table iterator; when shelf/key/type evidence is incomplete, emit the most plausible executable form with a warning instead of replacing a recoverable measure with TODO/BLANK |
 | LOD | {EXCLUDE dims : AGG} | Annotated CALCULATE(..., REMOVEFILTERS(...)) only for supported same-table physical numeric aggregates; cross-table keys and outer aggregates remain diagnostic |
-| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN | Diagnostic TODO/BLANK until mark grain, unique ordering, filters and totals are proven |
+| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN | Annotated visible-row aggregate approximation when cumulative mark grain/order/filters/totals are unproved; not cumulative parity |
 | Table Calc | RANK, RANK_UNIQUE, RANK_DENSE | RANKX(ALL()) |
 | Table Calc | WINDOW_SUM/AVG/MAX/MIN | CALCULATE() |
 | Syntax | ==, or/and, ELSEIF, + (strings), multi-line IF | =, \|\|/&&, ,, &, condensed IF |
@@ -440,8 +440,9 @@ Power BI Desktop openability.
    - No aggregation + column references owned by one physical table (needs
      row context) → calculated column
    - Unaggregated Tableau `role=measure` with references owned by multiple
-     physical tables → measure; unproved row/aggregation grain can emit
-     diagnostic TODO/BLANK rather than guessed filter-context aggregation
+     physical tables → measure; unproved row/aggregation grain should emit the
+     most plausible executable aggregation with a visible inferred-grain
+     warning rather than a diagnostic TODO/BLANK
    - No aggregation + no column refs → measure (formula-only)
    - Literal-value measure references in calc columns are inlined
 4. **RELATED()** — used for cross-table refs in manyToOne relationships only
@@ -459,27 +460,23 @@ Power BI Desktop openability.
 
   ### FIXED Migration Policy
 
-  Preserve an editable formula when source shelf evidence supports one. Use three
-  levels: proven equivalence emits exact DAX without an approximation warning;
-  resolved physical FIXED keys and an explicit, consistent `sum:`, `avg:`, `min:` or `max:`
-  shelf emit the corresponding iterator with a warning naming the inferred shelf,
-  unverified source filter scope and totals; missing or ambiguous evidence retains
-  an annotated `BLANK()`. Never claim an approximation is exact or lower the
-  existing verified-scope proof requirements. Current approximation support is
-  bounded to direct column aggregates and physical keys in one table. Preserve
-  every FIXED key; do not select an arbitrary shelf across conflicting uses or
-  datasources. An extractor's inferred/default SUM is not shelf evidence. A
-  generated formula is not native execution or value-parity proof.
+  Preserve an editable formula whenever a plausible executable lowering exists.
+  Proven equivalence emits exact DAX; otherwise emit a best-effort formula with
+  a DAX comment and TMDL `MigrationNote` naming inferred aggregation, grain,
+  filter or total assumptions. Prefer consistent evidence; if absent, use the
+  most likely structural/default aggregation (usually SUM), and if conflicting,
+  choose the supported majority with SUM as the tie-breaker. Do not relax exact
+  proof requirements or call an approximation exact. Preserve all FIXED keys;
+  scope consumer propagation to uniquely resolved same-datasource dependencies.
+  Generated DAX is not native execution or value-parity proof.
 
   ### INCLUDE / EXCLUDE Migration Policy
 
-  INCLUDE requires explicit consistent SUM/AVG/MIN/MAX shelf evidence and
-  same-table physical numeric columns; it emits an annotated iterator over all
-  included keys. EXCLUDE may emit an annotated REMOVEFILTERS expression only
-  for same-table physical keys and supported numeric aggregates. Neither path
-  claims source-filter or grand-total equivalence. Missing, ambiguous,
-  calculated, cross-table, nested, or unsupported grain evidence remains a
-  diagnostic TODO/BLANK; do not lower these guards to improve migration counts.
+  INCLUDE/EXCLUDE should preserve a plausible editable formula with an explicit
+  warning when shelf, row-calculated column, filter or total evidence is
+  incomplete. Keep proven same-table structure when available; unresolved
+  ownership or unsupported syntax still requires a recoverable diagnostic and
+  must not be reported as exact or parity-verified.
 
 ## Best Practices
 

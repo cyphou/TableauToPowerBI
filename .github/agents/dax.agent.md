@@ -46,8 +46,8 @@ You are the **DAX** agent for the Tableau to Power BI migration project. You are
 | Date | DATETRUNC→STARTOF*, DATEPART→YEAR/MONTH/DAY, DATEDIFF, DATEADD |
 | Math | ABS, CEILING, FLOOR, ROUND, POWER, SQRT, LOG, LN, EXP |
 | Stats | MEDIAN, STDEV→STDEV.S, PERCENTILE→PERCENTILE.INC, CORR→CORREL |
-| LOD | FIXED uses exact verified scopes or shelf-derived annotated iterators over physical keys; unknown/ambiguous shelf evidence or physical bindings retain TODO/BLANK. INCLUDE→CALCULATE, EXCLUDE→REMOVEFILTERS |
-| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN are diagnostic TODO/BLANK until mark grain, unique ordering, filters and totals are proven; RANK→RANKX(ALL()); supported WINDOW functions use CALCULATE/WINDOW patterns; WINDOW_PERCENTILE is diagnostic, and WINDOW_CORR/COVAR/P are unbounded-only approximations (explicit frame bounds are diagnostic) |
+| LOD | FIXED uses exact verified scopes first, otherwise an annotated best-effort iterator; inferred shelf/default choices and row-calculated same-table values are allowed with explicit warnings. INCLUDE→CALCULATE, EXCLUDE→REMOVEFILTERS |
+| Table Calc | RUNNING_SUM/AVG/COUNT/MAX/MIN emit an annotated visible-row aggregate when cumulative mark grain/order/filters/totals are unproved; this is not cumulative parity. RANK→RANKX(ALL()); supported WINDOW functions use CALCULATE/WINDOW patterns; WINDOW_PERCENTILE is diagnostic, and WINDOW_CORR/COVAR/P are unbounded-only approximations (explicit frame bounds are diagnostic) |
 | Iterator | SUM(IF(...))→SUMX, AVG(IF(...))→AVERAGEX |
 | Security | USERNAME()→USERPRINCIPALNAME(), ISMEMBEROF→RLS role |
 | Syntax | ==→=, ELSEIF→comma, + (strings)→&, or/and→\|\|/&& |
@@ -77,17 +77,19 @@ convert_tableau_formula_to_dax(formula, column_name, table_name, calc_map, param
 ### FIXED Exactness And Recoverability
 - Proven equivalence emits exact DAX without an approximation warning; preserve
   every requirement of the existing verified-scope compiler.
-- Otherwise, use explicit worksheet aggregation evidence, scoped by datasource
-  and calculation identity. Consistent SUM/AVG/MIN/MAX usage can emit
+- Otherwise, use worksheet aggregation evidence scoped by datasource and
+  calculation identity. Consistent SUM/AVG/MIN/MAX usage can emit
   SUMX/AVERAGEX/MINX/MAXX over VALUES(one key) or SUMMARIZE(all FIXED keys).
-  Current support requires physical keys and a direct physical-column aggregate
-  in one table; do not claim support for arbitrary FIXED formulas.
-- Annotate the inferred shelf and the unverified source filter scope and totals.
+  Inferred/default evidence and conflicting shelves use the most plausible
+  supported choice (majority, then SUM on a tie); same-table numeric row
+  calculations and directly composed same-datasource consumers are supported.
+- Annotate every inferred/conflicting choice and the unverified source filters
+  and totals in DAX and TMDL.
   Keep the warning in the TMDL expression and MigrationNote; syntax validation
   does not establish semantic equivalence, Desktop loading or value parity.
-- Missing, unsupported or conflicting shelf usage retains diagnostic BLANK().
+- Missing or conflicting shelf usage must not by itself force `BLANK()`; use the best-supported plausible formula and document the uncertainty.
   Never invent SUM, choose one of divergent worksheet usages, or treat a shelf
-  prefix as a complete semantic attestation. Inferred/default SUM is not evidence.
+  prefix as complete evidence. Label inferred/default SUM and do not claim parity.
 
 ### 3. Cross-Table References
 - **manyToOne** relationships → use `RELATED('LookupTable'[Column])`

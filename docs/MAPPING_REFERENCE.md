@@ -233,14 +233,14 @@ Desktop rendering.
 
 ## 📐 Level of Detail (LOD) Expressions
 
-FIXED prioritizes the unchanged exact-proof path. Otherwise an explicit,
-consistent SUM/AVG/MIN/MAX shelf can emit SUMX/AVERAGEX/MINX/MAXX over all
-resolved physical FIXED keys in one table, limited to a bounded direct-column
-inner aggregate. Generated warnings name the inferred shelf and unverified
-source filters and totals. Inferred/default SUM is not shelf evidence; missing,
-unsupported or conflicting evidence retains annotated `TODO`/`BLANK()`.
-Bounded same-datasource one-hop references are supported, not arbitrary
-products, conditional inner aggregates or nested LOD. See the
+FIXED prioritizes the unchanged exact-proof path. Otherwise it emits the most
+plausible bounded SUMX/AVERAGEX/MINX/MAXX over resolved keys. Explicit shelves,
+inferred/default aggregation, and conflicts are distinguished in the generated
+warning; conflicts select the supported majority, then SUM on a tie. Same-table
+numeric row-calculated values and directly composed same-datasource consumers
+are supported. Complex chains and unresolved ownership remain diagnostic. The
+warning names unverified filters and totals; it is not value-parity evidence.
+See the
 [DAX policy](TABLEAU_TO_DAX_REFERENCE.md#8-lod-level-of-detail-expressions).
 
 ### FIXED

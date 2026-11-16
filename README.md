@@ -968,7 +968,7 @@ SharedSales/
 | Text | `UPPER`, `LOWER`, `REPLACE`, `TRIM` | `UPPER`, `LOWER`, `SUBSTITUTE`, `TRIM` |
 | Agg | `COUNTD([col])` | `DISTINCTCOUNTNOBLANK([col])` with empty-table handling |
 | Agg | `AVG([col])` | `AVERAGE([col])` |
-| Date | `DATETRUNC`, `DATEPART`, `DATEDIFF` | `STARTOF*`, `YEAR/MONTH/DAY/HOUR/MINUTE/SECOND`, scalar quarter; DATEDIFF reorders supported literal intervals only; week/weekday remain diagnostic without verified week-start semantics |
+| Date | `DATETRUNC`, `DATEPART`, `DATEDIFF` | `STARTOF*`, `YEAR/MONTH/DAY/HOUR/MINUTE/SECOND`, scalar quarter; DATEDIFF reorders supported literal intervals; WEEK uses a warned 7-day approximation with unverified week-start semantics |
 | Date | `DATEADD`, `TODAY`, `NOW` | `EDATE` / scalar date arithmetic for supported `DATEADD` parts; unsupported parts are diagnostic; `TODAY`, `NOW` |
 | Math | `ABS`, `CEILING`, `FLOOR`, `ROUND` | Identical or mapped |
 | Stats | `MEDIAN`, `STDEV`, `STDEVP` | `MEDIAN`, `STDEV.S`, `STDEV.P` |

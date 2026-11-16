@@ -57,6 +57,10 @@ def _evaluate(expression, rows, measures=None, row=None):
     """Execute just the scalar/ALLEXCEPT subset used by these regressions."""
     expression = expression.strip()
     expression = _GENERATED_DAX_PROVENANCE.sub("", expression, count=1)
+    expression = re.sub(
+        r"^/\* FIXED best-effort approximation;.*?\*/\s*", "", expression,
+        count=1, flags=re.DOTALL,
+    )
     measures = measures or {}
     while expression.startswith("(") and expression.endswith(")"):
         # Strip grouping only when its closing parenthesis ends the expression.
@@ -331,7 +335,11 @@ class TestAuditFixedSourceToOutput(unittest.TestCase):
             expression = convert_tableau_formula_to_dax(source, table_name="Facts")
             with self.subTest(nullif=nullif):
                 self.assertNotIn("NULLIF(", expression.upper())
-                self.assertNotIn("/", expression)
+                self.assertIn("FIXED best-effort approximation", expression)
+                executable = re.sub(
+                    r"^/\* FIXED best-effort approximation;.*?\*/\s*", "",
+                    expression, count=1, flags=re.DOTALL)
+                self.assertNotIn("/", executable)
                 self.assertIn("ALLEXCEPT('Facts', 'Facts'[Entity])", expression)
                 for numerator, denominator, expected in (
                         (0, 0, None), (7, 0, None), (0, None, None),
@@ -344,6 +352,34 @@ class TestAuditFixedSourceToOutput(unittest.TestCase):
                         else:
                             self.assertEqual(actual, expected)
                             self.assertTrue(math.isfinite(actual))
+
+    def test_fixed_aggregate_ratio_tmdl_contains_approximation_note(self):
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root, "synthetic.csv")
+            source.write_text(
+                "Entity,Amount,Units\nA,10,2\n", encoding="utf-8")
+            datasource = _datasource(source)
+            datasource["calculations"] = datasource["calculations"][:1]
+            output = Path(root, "Synthetic.SemanticModel")
+            with redirect_stdout(io.StringIO()):
+                generate_tmdl([datasource], "Synthetic", {}, str(output))
+            content = (output / "definition" / "tables" / "Facts.tmdl").read_text(
+                encoding="utf-8")
+
+        declaration = re.search(
+            r"(?m)^\tmeasure 'Group ratio' =([^\n]*)", content)
+        self.assertIsNotNone(declaration, content)
+        self.assertIn("FIXED best-effort approximation", declaration.group(1))
+        self.assertIn("DIVIDE(SUM('Facts'[Amount]), SUM('Facts'[Units]))",
+                      declaration.group(1))
+        self.assertNotIn("TODO", declaration.group(1))
+        self.assertNotIn("BLANK()", declaration.group(1))
+        self.assertIn(
+            'annotation MigrationNote = "FIXED best-effort approximation;',
+            content,
+        )
 
     def test_fixed_denominator_cancellation_is_blank_not_an_average_of_row_ratios(self):
         for nullif in (False, True):

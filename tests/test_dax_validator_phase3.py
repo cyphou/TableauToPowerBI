@@ -251,16 +251,19 @@ class TestDatediffShape(unittest.TestCase):
         self.assertEqual([i for i in issues if 'DATEDIFF' in i], [])
         self.assertTrue(any('unmatched' in i for i in issues))
 
-    def test_converter_falls_back_to_a_todo_for_the_four_argument_form(self):
+    def test_converter_approximates_four_argument_week_form_with_warning(self):
         result = convert_tableau_formula_to_dax(
             "DATEDIFF('week', [Order Date], [Ship Date], 'monday')",
             column_name='Lead Weeks',
             validate_output=True,
             fallback_on_invalid=True,
         )
-        self.assertIn('TODO: DAX conversion validation failed for Lead Weeks', result)
-        self.assertTrue(result.rstrip().endswith('BLANK()'))
-        self.assertNotIn("'monday'", result.split('*/')[-1])
+        self.assertIn('DATEDIFF best-effort approximation', result)
+        self.assertIn('week-start && extra arguments unverified', result)
+        self.assertIn('QUOTIENT(DATEDIFF(', result)
+        self.assertIn(', DAY), 7)', result)
+        self.assertNotIn('TODO: DAX conversion validation failed', result)
+        self.assertNotIn('BLANK()', result)
 
     def test_converter_still_converts_the_supported_three_argument_form(self):
         result = convert_tableau_formula_to_dax(

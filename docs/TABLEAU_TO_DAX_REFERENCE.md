@@ -41,7 +41,7 @@ when reviewing a conversion. Static syntax validation does not execute DAX.
 | 16 | `RIGHT(string, number)` | `RIGHT(string, number)` | ✅ | |
 | 17 | `RTRIM(string)` | `LEFT(s, MAXX(FILTER(GENERATESERIES(1, LEN(s)), MID(s, [Value], 1) <> " "), [Value]))` with blank/empty guards | ✅ | Finds the last non-space in the original string, preserving leading and repeated internal ordinary spaces; blank stays blank and all-space input returns `""` |
 | 18 | `SPACE(number)` | `REPT(" ", number)` | ✅ | |
-| 19 | `SPLIT(string, delimiter[, token])` | Guarded `PATHITEM` / `PATHITEMREVERSE` approximation | ⚠️ | Defaults to token 1; negative indexes count from the end. Blank input returns `BLANK()`. A literal `|` delimiter uses the source directly; for other delimiters, source values containing `|` return `BLANK()` rather than a potentially wrong token. |
+| 19 | `SPLIT(string, delimiter[, token])` | Warned `PATHITEM` / `PATHITEMREVERSE` best-effort approximation | ⚠️ | Defaults to token 1; negative indexes count from the end. Blank input returns `BLANK()`. A literal `|` delimiter uses the source directly; for other delimiters, values containing the reserved `|` may be split incorrectly rather than blanked. |
 | 20 | `STARTSWITH(string, substring)` | `LEFT(string, LEN(substring)) = substring` | ✅ | Decomposed — no native DAX STARTSWITH |
 | 21 | `TRIM(string)` | `TRIM(string)` | ✅ | |
 | 22 | `UPPER(string)` | `UPPER(string)` | ✅ | |
@@ -93,7 +93,7 @@ physical bindings. Existing LOD and source-grain proof requirements still apply.
 | # | Tableau | DAX | Status | Notes |
 |---|---------|-----|--------|-------|
 | 1 | `DATEADD(date_part, interval, date)` | `EDATE` or scalar date arithmetic | ✅/🔧 | Month/year/quarter use `EDATE`; day/week/hour/minute/second use scalar arithmetic. Unsupported date parts remain diagnostic; this is not DAX time-intelligence `DATEADD`. |
-| 2 | `DATEDIFF(date_part, start, end)` | `DATEDIFF(start, end, INTERVAL)` | ✅/🔧 | Reorders supported literal `YEAR`/`QUARTER`/`MONTH`/`DAY`/`HOUR`/`MINUTE`/`SECOND`; unknown or dynamic intervals are diagnostic. `WEEK` remains diagnostic until week-start semantics are verified. |
+| 2 | `DATEDIFF(date_part, start, end)` | `DATEDIFF(start, end, INTERVAL)` | ✅/🔧 | Reorders supported literal `YEAR`/`QUARTER`/`MONTH`/`DAY`/`HOUR`/`MINUTE`/`SECOND`; unknown or dynamic intervals are diagnostic. `WEEK` uses a warned `QUOTIENT(DATEDIFF(..., DAY), 7)` approximation; week-start and extra-argument semantics are unverified. |
 | 3 | `DATENAME(date_part, date)` | `FORMAT` by supported part | ✅/🔧 | `year` → `"YYYY"`, `quarter` → `"Q"`, `month` → `"MMMM"`, `day` → `"D"`, `weekday/dayofweek` → `"DDDD"`; hour/minute/second use null-guarded numeric `FORMAT`. Unsupported parts or arities produce diagnostic `TODO`/`BLANK()`. |
 | 4 | `DATEPARSE(format, string)` | `DATEVALUE` for `yyyy-MM-dd` / `%Y-%m-%d`; `DATE` for `yyyy` | ✅/🔧 | Other, ambiguous or missing formats remain diagnostic; the format is never silently discarded. |
 | 5 | `DATEPART('year', date)` | `YEAR(date)` | ✅ | |
@@ -214,11 +214,11 @@ When an aggregate wraps an expression (not a single column), the converter auto-
 | 8 | `RANK_MODIFIED(expr)` | `RANKX(ALL('Table'), expr)` + comment | ⚠️ | Competition ranking — verify |
 | 9 | `RANK_PERCENTILE(expr)` | `DIVIDE(RANKX-1, COUNTROWS-1)` | ⚠️ | Approximate percentile rank |
 | 10 | `RANK_UNIQUE(expr)` | `RANKX(ALL('Table'), expr)` | ✅ | |
-| 11 | `RUNNING_AVG(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven |
-| 12 | `RUNNING_COUNT(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Mark grain and order semantics are unproven; COUNTD also needs verified mark ordering and partitioning |
-| 13 | `RUNNING_MAX(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven |
-| 14 | `RUNNING_MIN(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven |
-| 15 | `RUNNING_SUM(expr)` | Diagnostic `TODO`/`BLANK()` | 🔧 | Order metadata may be forwarded, but mark grain, unique ties, filters and totals are not proven |
+| 11 | `RUNNING_AVG(expr)` | Annotated `CALCULATE(inner, FILTER(ALLSELECTED(table), TRUE()))` | ⚠️ | Visible-row aggregate approximation, not a proven cumulative result; grain/order/partition/filters/totals are unverified |
+| 12 | `RUNNING_COUNT(expr)` | Annotated `CALCULATE(inner, FILTER(ALLSELECTED(table), TRUE()))` | ⚠️ | Visible-row aggregate approximation, not a proven cumulative result; grain/order/partition/filters/totals are unverified |
+| 13 | `RUNNING_MAX(expr)` | Annotated `CALCULATE(inner, FILTER(ALLSELECTED(table), TRUE()))` | ⚠️ | Visible-row aggregate approximation, not a proven cumulative result |
+| 14 | `RUNNING_MIN(expr)` | Annotated `CALCULATE(inner, FILTER(ALLSELECTED(table), TRUE()))` | ⚠️ | Visible-row aggregate approximation, not a proven cumulative result |
+| 15 | `RUNNING_SUM(expr)` | Annotated `CALCULATE(inner, FILTER(ALLSELECTED(table), TRUE()))` | ⚠️ | Visible-row aggregate approximation, not a proven cumulative result; grain/order/partition/filters/totals are unverified |
 | 16 | `SIZE()` | Diagnostic `TODO`/`BLANK()` | 🔧 | Requires verified mark grain and partition context; addressing dimensions alone do not establish the row set |
 | 17 | `TOTAL(expr)` | `CALCULATE(expr)` | ✅ | |
 | 18 | `WINDOW_AVG(expr)` | `CALCULATE(expr, ALL('Table'))` | ✅ | |
@@ -242,21 +242,23 @@ When an aggregate wraps an expression (not a single column), the converter auto-
 
 | # | Tableau | DAX | Status | Notes |
 |---|---------|-----|--------|-------|
-| 1 | `{FIXED [dim] : AGG(expr)}` | Exact DAX with proof; otherwise bounded SUMX/AVERAGEX/MINX/MAXX or annotated `BLANK()` | ⚠️ | Apply the three-level FIXED policy below. Composite/range logical relationships require the explicit policy in [Known Limitations](KNOWN_LIMITATIONS.md#composite-and-range-logical-relationships). |
-| 2 | `{INCLUDE [dim] : AGG(expr)}` | Annotated SUMX/AVERAGEX/MINX/MAXX over explicit shelf evidence and same-table physical keys; otherwise diagnostic `BLANK()` | ⚠️ | Numeric physical columns and an unambiguous SUM/AVG/MIN/MAX shelf are required; source filters and totals remain unverified. |
-| 3 | `{EXCLUDE [dim] : AGG(expr)}` | Annotated `CALCULATE(AGG(expr), REMOVEFILTERS(...))` for same-table physical keys and numeric aggregates; otherwise diagnostic `BLANK()` | ⚠️ | Aggregating an EXCLUDE result, cross-table keys, or unsupported row expressions require verified target grain and are not guessed. |
-| 4 | `{AGG(expr)}` (table-scoped, no dims) | Diagnostic `BLANK()` unless source row bag, filter scope and total grain are proven | ⚠️ | A context-free `CALCULATE` does not establish Tableau's table-scoped grain or total semantics. |
+| 1 | `{FIXED [dim] : AGG(expr)}` | Exact DAX with proof; otherwise annotated best-effort SUMX/AVERAGEX/MINX/MAXX | ⚠️ | Inferred/conflicting shelves, same-table numeric row calculations and direct same-datasource consumers are warned; see the policy below. |
+| 2 | `{INCLUDE [dim] : AGG(expr)}` | Annotated same-table SUMX/AVERAGEX/MINX/MAXX when a plausible key/value binding exists | ⚠️ | Incomplete shelf/filter/total evidence is surfaced as an approximation warning; unsupported ownership remains diagnostic. |
+| 3 | `{EXCLUDE [dim] : AGG(expr)}` | Annotated `CALCULATE(AGG(expr), REMOVEFILTERS(...))` when same-table keys and a supported aggregate are plausible | ⚠️ | Source filters and totals are not proven; unsupported ownership or syntax remains diagnostic. |
+| 4 | `{AGG(expr)}` (table-scoped, no dims) | Best-effort scoped aggregate when a table binding is available; otherwise diagnostic | ⚠️ | Source row bag, filter scope and total grain are explicitly unverified. |
 
-FIXED uses three levels, in order:
+FIXED uses two levels, in order:
 
 1. Proven source-scope equivalence emits exact DAX without an approximation
 	warning; the existing proof requirements are unchanged.
-2. Otherwise an explicit, consistent `sum:`, `avg:`, `min:` or `max:` shelf
-	selects SUMX/AVERAGEX/MINX/MAXX over **all** resolved physical FIXED keys in
-	one table, limited to a bounded direct-column inner aggregate. The emitted
-	warning names the inferred shelf and unverified source filters and totals.
-3. Missing, unsupported or conflicting evidence retains diagnostic
-	`TODO`/`BLANK()`. An extractor's inferred/default SUM is not shelf evidence.
+2. Otherwise emit the most plausible supported SUM/AVG/MIN/MAX iterator over
+	resolved keys. Explicit shelves retain their warning; inferred/default
+	aggregation is labeled inferred; conflicting evidence chooses the supported
+	majority, with SUM as the tie-breaker. Same-table numeric row-calculated
+	values and directly composed same-datasource consumers are supported. Each
+	approximation states that filters and totals are unverified and is not
+	native value-parity evidence. Unresolved ownership or invalid DAX remains
+	diagnostic.
 
 Bounded same-datasource one-hop FIXED references are supported. Do not infer
 support for arbitrary products, conditional inner aggregates or nested LOD.

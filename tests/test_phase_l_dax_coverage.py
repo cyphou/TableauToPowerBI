@@ -151,23 +151,25 @@ class TestTableCalcEdgeCases(unittest.TestCase):
 
     def test_running_sum_nested_expr(self):
         result = convert_tableau_formula_to_dax('RUNNING_SUM(SUM([Sales]) * 2)')
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn('CALCULATE(SUM(', result)
+        self.assertIn('visible-row aggregate', result)
+        self.assertNotIn('BLANK()', result)
 
     def test_total_countd(self):
         result = convert_tableau_formula_to_dax('TOTAL(COUNTD([Customer]))')
         self.assertIn('CALCULATE', result)
 
-    def test_running_sum_with_compute_using(self):
+    def test_running_sum_with_compute_using_is_annotated(self):
         result = convert_tableau_formula_to_dax(
             'RUNNING_SUM(SUM([Sales]))',
             compute_using=['Date'],
             table_name='Orders'
         )
-        self.assertIn('TODO: DAX conversion validation failed', result)
-        self.assertIn('BLANK()', result)
-        self.assertNotIn('CALCULATE', result)
+        self.assertIn('Table-calculation best-effort approximation', result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertIn('partition', result)
+        self.assertNotIn('BLANK()', result)
 
 
 class TestDateConverterEdgeCases(unittest.TestCase):
@@ -197,11 +199,14 @@ class TestDateConverterEdgeCases(unittest.TestCase):
         self.assertEqual(
             result, "DATEDIFF('Table'[Start], 'Table'[End], QUARTER)")
 
-    def test_datediff_week_is_diagnostic_without_week_start_policy(self):
+    def test_datediff_week_uses_warned_seven_day_approximation(self):
         result = convert_tableau_formula_to_dax(
             'DATEDIFF("week", [Start], [End])')
-        self.assertIn('verified week-start semantics', result)
-        self.assertNotIn('DATEDIFF(', result)
+        self.assertIn('DATEDIFF best-effort approximation', result)
+        self.assertIn('week-start', result)
+        self.assertIn('QUOTIENT(DATEDIFF(', result)
+        self.assertIn(', DAY), 7)', result)
+        self.assertNotIn('TODO', result)
 
     def test_datediff_call_shaped_text_is_preserved(self):
         formula = '"DATEDIFF(""fortnight"", [Start], [End])"'

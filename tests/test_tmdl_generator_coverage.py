@@ -765,6 +765,53 @@ class TestProcessSetsGroupsBins(unittest.TestCase):
 class TestCreateQuickTableCalcMeasures(unittest.TestCase):
     """Cover L2721-2816: table calculation measure generation."""
 
+    def test_split_best_effort_warning_is_written_to_tmdl(self):
+        datasource = {'name': 'Sample', 'tables': [{
+            'name': 'Sales',
+            'columns': [{'name': 'Email', 'datatype': 'string'}],
+        }], 'calculations': [{
+            'name': '[SplitEmail]', 'caption': 'Split Email',
+            'formula': 'SPLIT([Email], "@", 2)',
+            'datatype': 'string', 'role': 'measure',
+            'datasource_name': 'Sample',
+        }]}
+        with tempfile.TemporaryDirectory() as output:
+            generate_tmdl([datasource], 'Sample', {}, output_dir=output)
+            content = (os.path.join(
+                output, 'definition', 'tables', 'Sales.tmdl'))
+            with open(content, encoding='utf-8') as model_file:
+                tmdl = model_file.read()
+
+        self.assertIn('SPLIT best-effort approximation', tmdl)
+        self.assertIn('reserved | separator may be mis-split', tmdl)
+        self.assertIn('annotation MigrationNote = SPLIT best-effort approximation;', tmdl)
+
+    def test_datediff_week_best_effort_warning_is_written_to_tmdl(self):
+        datasource = {'name': 'Sample', 'tables': [{
+            'name': 'Sales',
+            'columns': [
+                {'name': 'Order Date', 'datatype': 'datetime'},
+                {'name': 'Ship Date', 'datatype': 'datetime'},
+            ],
+        }], 'calculations': [{
+            'name': '[LeadWeeks]', 'caption': 'Lead Weeks',
+            'formula': "DATEDIFF('week', [Order Date], [Ship Date], 'monday')",
+            'datatype': 'integer', 'role': 'measure',
+            'datasource_name': 'Sample',
+        }]}
+        with tempfile.TemporaryDirectory() as output:
+            generate_tmdl([datasource], 'Sample', {}, output_dir=output)
+            model_path = os.path.join(output, 'definition', 'tables', 'Sales.tmdl')
+            with open(model_path, encoding='utf-8') as model_file:
+                tmdl = model_file.read()
+
+        self.assertIn('DATEDIFF best-effort approximation', tmdl)
+        self.assertIn('QUOTIENT(DATEDIFF(', tmdl)
+        self.assertIn(
+            'annotation MigrationNote = DATEDIFF best-effort approximation;',
+            tmdl,
+        )
+
     def test_running_sum_conversion_receives_worksheet_table_calc_context(self):
         formula = 'RUNNING_SUM(SUM([Revenue]))'
         datasources = [{'name': 'Sample', 'tables': [{

@@ -647,37 +647,42 @@ class TestRunningFunctions(unittest.TestCase):
     def test_running_sum(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_SUM(SUM([Sales]))", table_name="Orders")
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_running_avg(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_AVG(AVG([Sales]))", table_name="Orders")
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_running_count(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_COUNT(COUNT([ID]))", table_name="Orders")
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_running_max(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_MAX(MAX([Sales]))", table_name="Orders")
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_running_min(self):
         result = convert_tableau_formula_to_dax(
             "RUNNING_MIN(MIN([Sales]))", table_name="Orders")
-        self.assertIn("TODO: DAX conversion validation failed", result)
-        self.assertIn("BLANK()", result)
-        self.assertNotIn("CALCULATE", result)
+        self.assertIn("Table-calculation best-effort approximation", result)
+        self.assertIn("CALCULATE", result)
+        self.assertIn("ALLSELECTED('Orders')", result)
+        self.assertNotIn("BLANK()", result)
 
     def test_comments_do_not_trigger_conversion_validation(self):
         result = convert_tableau_formula_to_dax(
