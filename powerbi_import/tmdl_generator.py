@@ -1611,6 +1611,7 @@ from powerbi_import.tmdl_relationships import (  # noqa: E402,F401
     _infer_cross_table_relationships,
     _is_parameter_table,
     _materialize_composite_logical_relationships,
+    declared_row_joins,
 )
 
 
@@ -3019,11 +3020,10 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
     _deactivate_ambiguous_paths(model)
     _validate_combined_group_relationships(model, extra_objects)
 
-    # Phase 11b: Row-level measures over explicit joined source rows.
-    _iterate_row_expressions_over_joins(model)
-
-    # Phase 11b: Row-level measures over explicit joined source rows.
-    _iterate_row_expressions_over_joins(model)
+    # Phase 11b: Row-level measures over their joined source rows.
+    _iterate_row_expressions_over_joins(model, declared_row_joins(
+        datasources, [table.get('name', '') for table in model['model']['tables']],
+        model.get('_table_rename_map')))
 
     # Deduplicate measures globally with case-insensitive uniqueness.
     # PBI measure names must be globally unique and are compared
@@ -4202,10 +4202,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         has_source_conflict = bool(calc.get('_source_declaration_conflicts'))
         source_conflict_path = source_conflict_paths.get(id(calc), ())
         ownership_path = dax_context.get('ownership_paths', {}).get(id(calc), ())
-        ambiguous_calculation_references = {
-            ref.casefold() for ref in re.findall(r'\[([^\]]+)\]', formula)
-            if calculation_caption_counts.get(ref.casefold(), 0) > 1
-        }
         local_calc_map = dict(calc_map_ctx)
         scoped_calc_map = dax_context.get('fixed_shelf_calc_maps', {}).get(id(calc), {})
         local_param_values = dict(param_values)
@@ -4457,13 +4453,6 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
             dax_formula = (
                 f'/* TODO: DAX conversion validation failed for {target_kind}: '
                 f'{reason} */ BLANK()'
-            )
-        elif ambiguous_calculation_references:
-            target_kind = 'column' if is_calc_col else 'measure'
-            references = ', '.join(sorted(ambiguous_calculation_references))
-            dax_formula = (
-                f'/* TODO: DAX conversion validation failed for {target_kind}: '
-                f'ambiguous calculation reference(s): {references} */ BLANK()'
             )
         elif ownership_path and 'TODO: DAX conversion validation failed' not in dax_formula:
             dax_formula = (

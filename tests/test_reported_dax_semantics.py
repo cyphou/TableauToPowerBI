@@ -882,13 +882,17 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
         self.assertNotIn("TODO", expression)
         self.assertNotIn("BLANK()", expression)
 
-        unsupported = convert_tableau_formula_to_dax(
+        averaged_measure = convert_tableau_formula_to_dax(
             "{ FIXED [Unknown] : AVG([Logements double]) / SUM([Conso]) }",
             table_name="Housing", table_columns=["Conso"],
             measure_names={"Logements double"},
             fixed_shelf_aggregation="SUM",
         )
-        _assert_unsupported(self, unsupported, "FIXED")
+        self.assertTrue(averaged_measure.endswith(
+            "DIVIDE(AVERAGEX('Housing', [Logements double]), SUM('Housing'[Conso]))"))
+        self.assertIn("AVERAGE over calculation Logements double iterated with AVERAGEX",
+                      averaged_measure)
+        self.assertNotIn("TODO", averaged_measure)
 
         unproved_cross_table_shelf = convert_tableau_formula_to_dax(
             "{ FIXED [Sector] : SUM([Conso]) / SUM([Conso]) }",
@@ -3696,8 +3700,9 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
             "name": "[Consumer]", "datasource": "Synthetic", "aggregation": "SUM"}]}]
         content = self._generate_fixed_tmdl([datasource], worksheets)["Housing"]
         _assert_unsupported(self, self._fixed_declaration(content), "FIXED")
-        _assert_unsupported(self, self._fixed_declaration(
-            content, "Consumer", "Consumer"))
+        consumer = self._fixed_declaration(content, "Consumer", "Consumer")
+        self.assertNotIn("ambiguous calculation reference", consumer)
+        self.assertNotIn("TODO", consumer)
         self.assertNotIn("approximation;", content)
 
     def test_fixed_cross_datasource_dependency_uses_only_local_default(self):

@@ -1296,27 +1296,35 @@ def _compile_approximate_fixed_aggregate_ratio(
                            if isinstance(name, str)}
     available_folded = {name.casefold() for name in available or ()}
 
+    foreign_operands = {}
+    missing_operands = []
+    calculation_operands = []
+
     def aggregate_operand(aggregate, reference):
         if reference[0] == 'row_expression':
             return ('row_expression', aggregate, reference[1])
         owner, name = reference[2], reference[3]
+        folded = name.casefold()
         mapped_owner = (column_table_map.get(name)
                         if isinstance(column_table_map, dict) else None)
-        is_measure = (name.casefold() in measures
-                      and name.casefold() not in available_folded
-                      and (mapped_owner is None
-                           or (name.casefold() in row_approx_measures
-                               and mapped_owner == table_name)))
-        if is_measure:
-            if (name.casefold() not in row_approx_measures
-                    or (owner is not None and owner != table_name)):
-                return None
+        local = owner in (None, table_name) and mapped_owner in (None, table_name)
+        if local and folded in measures and folded not in available_folded:
+            if folded not in row_approx_measures:
+                calculation_operands.append(name)
             return ('measure', aggregate, name)
-        if (owner is not None and owner != table_name
-                or mapped_owner is not None and mapped_owner != table_name
-                or available is not None and name not in available
-                or name.casefold() in measures):
-            return None
+        foreign = next((table for table in (owner, mapped_owner)
+                        if table not in (None, table_name)), None)
+        if foreign is not None:
+            if folded in measures:
+                return None
+            foreign_operands[name] = foreign
+            return ('column', aggregate, name)
+        if available is not None and name not in available:
+            if mapped_owner == table_name:
+                calculation_operands.append(name)
+                return ('measure', aggregate, name)
+            missing_operands.append(name)
+            return ('column', aggregate, name)
         return ('column', aggregate, name)
 
     numerator_binding = aggregate_operand(*numerator)
@@ -1376,7 +1384,7 @@ def _compile_approximate_fixed_aggregate_ratio(
             return f'{iterator}({safe_table}, {measure_ref})'
         if kind == 'row_expression':
             return name
-        return aggregate + '(' + column(name) + ')'
+        return aggregate + '(' + column(name, foreign_operands.get(name, table_name)) + ')'
 
     numerator_value = operand(numerator_binding)
     denominator_value = operand(denominator_binding)
@@ -1399,13 +1407,21 @@ def _compile_approximate_fixed_aggregate_ratio(
         if kind == 'row_expression'
     ]
     for aggregate, name in measure_operands:
+        kind = 'calculation' if name in calculation_operands else 'row-expression measure'
         if aggregate == 'SUM':
-            warnings.append(f"SUM over row-expression measure {name} unwrapped")
+            warnings.append(f"SUM over {kind} {name} unwrapped")
         else:
             warnings.append(
-                f"{aggregate} over row-expression measure {name} iterated with "
+                f"{aggregate} over {kind} {name} iterated with "
                 f"{_NUMERIC_ROW_ITERATORS.get(aggregate, 'iterator')}"
             )
+    if foreign_operands:
+        warnings.append(
+            f"cross-table operand(s) {', '.join(foreign_operands)}; "
+            "relationship propagation unverified")
+    if missing_operands:
+        warnings.append(
+            f"missing schema operand(s) {', '.join(missing_operands)} referenced as columns")
     if row_expression_operands:
         iterators = sorted({
             _NUMERIC_ROW_ITERATORS[aggregate]

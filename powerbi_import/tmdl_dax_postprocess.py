@@ -14,6 +14,7 @@ Owned by **@dax**.
 import logging
 import re
 from collections import deque
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -407,9 +408,6 @@ def _unwrap_aggregations_of_measures(result_table):
                     or (owner is not None and owner != home_table)):
                 continue
             source_measure = measures_by_name[name.casefold()]
-            if 'TODO: DAX conversion validation failed' in source_measure.get(
-                    'expression', ''):
-                continue
             aggregate = match.group(1).upper()
             safe_name = '[' + name.replace(']', ']]') + ']'
             if aggregate == 'SUM':
@@ -556,8 +554,80 @@ def _matching_dax_paren(expression, opening):
     return None
 
 
-def _iterate_row_expressions_over_joins(model):
-    """Expand a simple row iterator over one explicit direct source join."""
+class RowJoinSource(NamedTuple):
+    """How a row iterator reaches the rows of one other table."""
+
+    function: str
+    condition: str
+    warning: str
+
+
+def _quoted_column(table, column):
+    return "'" + table.replace("'", "''") + "'[" + column.replace(']', ']]') + ']'
+
+
+def _declared_row_join(iterated, foreign, declared_joins):
+    """The Tableau physical join between the two tables, when one is declared."""
+    join = (declared_joins or {}).get((iterated, foreign))
+    if join is None:
+        return None
+    keeps_iterated_rows = (
+        join.join_type == 'full'
+        or (join.join_type == 'left' and iterated == join.left_table)
+        or (join.join_type == 'right' and iterated == join.right_table))
+    warning = (f"joined row source {iterated} with {foreign} on the declared Tableau "
+               f"{join.join_type} join")
+    if join.omitted_conditions:
+        warning += f"; {join.omitted_conditions} join condition(s) not translated, omitted"
+    return RowJoinSource('GENERATEALL' if keeps_iterated_rows else 'GENERATE',
+                         join.condition, warning)
+
+
+def _relationship_row_join(iterated, foreign, tables, relationships, *, inferred):
+    """A unique model relationship between the two tables, in either direction."""
+    keys = []
+    for rel in relationships:
+        if (str(rel.get('name', '')).startswith('inferred_') != inferred
+                or str(rel.get('joinType') or '').casefold() not in ('left', 'inner', '')):
+            continue
+        ends = (rel.get('fromTable'), rel.get('toTable'))
+        if ends == (iterated, foreign):
+            keys.append((rel, rel.get('fromColumn'), rel.get('toColumn')))
+        elif ends == (foreign, iterated):
+            keys.append((rel, rel.get('toColumn'), rel.get('fromColumn')))
+    keys = [key for key in keys if key[0].get('isActive', True)] or keys
+    if len(keys) != 1:
+        return None
+    relationship, home_key, foreign_key = keys[0]
+    if (home_key not in {col.get('name') for col in tables[iterated].get('columns', [])}
+            or foreign_key not in {col.get('name') for col in tables[foreign].get('columns', [])}):
+        return None
+    join_type = str(relationship.get('joinType') or '').casefold()
+    if inferred:
+        warning = (f"joined row source {iterated} with {foreign} through a relationship "
+                   "inferred from column names; join keys and join type unverified")
+    else:
+        warning = (f"joined row source {iterated} with {foreign}; "
+                   f"{join_type or 'left join assumed, join type unverified'}; "
+                   "relationship cardinality unverified")
+    return RowJoinSource('GENERATE' if join_type == 'inner' else 'GENERATEALL',
+                         f'{_quoted_column(foreign, foreign_key)} = '
+                         f'{_quoted_column(iterated, home_key)}',
+                         warning)
+
+
+def _row_join_source(iterated, foreign, tables, relationships, declared_joins):
+    """Choose declared physical evidence before explicit or inferred model edges."""
+    return (_declared_row_join(iterated, foreign, declared_joins)
+            or _relationship_row_join(iterated, foreign, tables, relationships, inferred=False)
+            or _relationship_row_join(iterated, foreign, tables, relationships, inferred=True))
+
+
+def _iterate_row_expressions_over_joins(model, declared_joins=None):
+    """Expand row iterators over declared source joins, then model relationships.
+
+    *declared_joins* maps ``(table, other)`` to the Tableau physical join.
+    """
     tables = {table.get('name', ''): table
               for table in model.get('model', {}).get('tables', [])}
     relationships = model.get('model', {}).get('relationships', [])
@@ -607,35 +677,15 @@ def _iterate_row_expressions_over_joins(model):
                 source_expression = iterator_match.group('table')
                 warnings, valid = [], True
                 for foreign_table in foreign_tables:
-                    candidates = [rel for rel in relationships
-                                  if rel.get('fromTable') == iterated_table
-                                  and rel.get('toTable') == foreign_table
-                                  and not str(rel.get('name', '')).startswith('inferred_')
-                                  and rel.get('joinType', '').casefold() in ('left', 'inner', '')]
-                    active = [rel for rel in candidates if rel.get('isActive', True)]
-                    if active:
-                        candidates = active
-                    if len(candidates) != 1:
+                    source = _row_join_source(iterated_table, foreign_table, tables,
+                                              relationships, declared_joins)
+                    if source is None:
                         valid = False
                         break
-                    relationship = candidates[0]
-                    left_key = relationship.get('fromColumn')
-                    right_key = relationship.get('toColumn')
-                    if (left_key not in {col.get('name') for col in tables[iterated_table].get('columns', [])}
-                            or right_key not in {col.get('name') for col in tables[foreign_table].get('columns', [])}):
-                        valid = False
-                        break
-                    join_type = relationship.get('joinType', '').casefold()
-                    join_function = 'GENERATE' if join_type == 'inner' else 'GENERATEALL'
-                    left_ref = iterator_match.group('table') + '[' + left_key.replace(']', ']]') + ']'
-                    right_ref = quoted_table(foreign_table) + '[' + right_key.replace(']', ']]') + ']'
                     source_expression = (
-                        f"{join_function}({source_expression}, FILTER({quoted_table(foreign_table)}, "
-                        f"{right_ref} = {left_ref}))")
-                    warnings.append(
-                        f"joined row source {iterated_table} with {foreign_table}; "
-                        f"{join_type or 'left join assumed, join type unverified'}; "
-                        "relationship cardinality unverified")
+                        f"{source.function}({source_expression}, FILTER({quoted_table(foreign_table)}, "
+                        f"{source.condition}))")
+                    warnings.append(source.warning)
                 if valid:
                     edits.append((iterator_match.start('table'), iterator_match.end('table'),
                                   source_expression))

@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import uuid
+from typing import NamedTuple
 
 from tableau_export.m_query_builder import _m_header_literal
 from powerbi_import.errors import PartialGenerationError
@@ -205,6 +206,94 @@ def _physical_join_scopes(datasource):
                             and frozenset(equality) not in scope['equalities']:
                         scope['equalities'].append(frozenset(equality))
     return scopes
+
+
+class DeclaredRowJoin(NamedTuple):
+    """A Tableau physical join between two model tables as a DAX row condition."""
+
+    left_table: str
+    right_table: str
+    join_type: str
+    condition: str
+    omitted_conditions: int
+
+
+_TABLEAU_QUALIFIED_FIELD_RE = re.compile(
+    r"\[((?:[^\]]|\]\])+)\]\.\[((?:[^\]]|\]\])+)\]")
+_KEYWORD_BEFORE_FIELD_RE = re.compile(
+    r"(\"(?:[^\"]|\"\")*\"|'(?:[^']|'')*')|"
+    r"\b(IF|ELSEIF|THEN|ELSE|CASE|WHEN|AND|OR|NOT)\[", re.IGNORECASE)
+
+
+def _join_side_dax(side, tables):
+    """Translate one join-predicate side, or refuse it when ownership is unclear."""
+    if not isinstance(side, dict):
+        return None
+    table, column = side.get('table'), side.get('column')
+    if isinstance(table, str) and isinstance(column, str) and table in tables:
+        return "'" + tables[table].replace("'", "''") + "'[" + column.replace(']', ']]') + ']'
+    expression = side.get('expression')
+    if not isinstance(expression, str) or not expression.strip():
+        return None
+    fields = _TABLEAU_QUALIFIED_FIELD_RE.findall(expression)
+    owners = {owner for owner, _ in fields}
+    if len(owners) != 1 or not owners <= set(tables):
+        return None
+    owner = tables[owners.pop()]
+    bare = _TABLEAU_QUALIFIED_FIELD_RE.sub(
+        lambda match: '[' + match.group(2).replace(']]', ']') + ']', expression)
+    bare = _KEYWORD_BEFORE_FIELD_RE.sub(
+        lambda match: match.group(1) or match.group(2) + ' [', bare)
+    from tableau_export.dax_converter import convert_tableau_formula_to_dax
+    dax = convert_tableau_formula_to_dax(
+        bare, column_name='join condition', table_name=owner,
+        column_table_map={name.replace(']]', ']'): owner for _, name in fields})
+    if not dax or 'TODO' in dax or dax.rstrip().endswith('BLANK()'):
+        return None
+    return f'({dax})'
+
+
+def declared_row_joins(datasources, table_names, table_rename_map=None):
+    """Map table pairs to their declared physical Tableau join predicates."""
+    rename = table_rename_map or {}
+    model_tables = set(table_names)
+    joins = {}
+    for datasource in datasources or []:
+        if not isinstance(datasource, dict):
+            continue
+        source_name = datasource.get('name', '')
+        for _, node in _physical_join_nodes(datasource):
+            left, right = _physical_join_sides(node)
+            if len(left) != 1 or len(right) != 1:
+                continue
+            aliases = {alias: rename.get((source_name, alias), alias) for alias in left | right}
+            if not set(aliases.values()) <= model_tables:
+                continue
+            predicate = node.get('predicate')
+            terms = (predicate.get('arguments', [])
+                     if isinstance(predicate, dict)
+                     and str(predicate.get('operator', '')).upper() == 'AND'
+                     else [predicate])
+            conditions, omitted = [], 0
+            for term in terms:
+                if (not isinstance(term, dict)
+                        or str(term.get('operator', '')) not in ('=', '==')):
+                    omitted += 1
+                    continue
+                sides = [_join_side_dax(term.get(key), aliases) for key in ('left', 'right')]
+                if None in sides:
+                    omitted += 1
+                    continue
+                conditions.append(f'{sides[0]} = {sides[1]}')
+            if not conditions:
+                continue
+            join = DeclaredRowJoin(
+                aliases[next(iter(left))], aliases[next(iter(right))],
+                str(node.get('join_type') or 'inner').casefold(),
+                ' && '.join(conditions), omitted)
+            joins.setdefault((join.left_table, join.right_table), join)
+            joins.setdefault((join.right_table, join.left_table), join)
+    return joins
 
 
 def preserve_physical_join_provenance(datasources, merged_datasource):
