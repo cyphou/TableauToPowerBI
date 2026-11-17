@@ -238,6 +238,7 @@ from powerbi_import.tmdl_m_conversion import (  # noqa: F401
 from powerbi_import.tmdl_dax_postprocess import (  # noqa: E402,F401
     _BARE_COL_REF_RE,
     _fix_related_for_many_to_many,
+    _iterate_row_expressions_over_joins,
     _promote_measure_dependent_calc_columns,
     _replace_related_in_aggx_context,
     _replace_related_with_lookupvalue,
@@ -3018,6 +3019,12 @@ def _apply_semantic_enrichments(model, extra_objects, main_table_name, column_ta
     _deactivate_ambiguous_paths(model)
     _validate_combined_group_relationships(model, extra_objects)
 
+    # Phase 11b: Row-level measures over explicit joined source rows.
+    _iterate_row_expressions_over_joins(model)
+
+    # Phase 11b: Row-level measures over explicit joined source rows.
+    _iterate_row_expressions_over_joins(model)
+
     # Deduplicate measures globally with case-insensitive uniqueness.
     # PBI measure names must be globally unique and are compared
     # case-insensitively, so 'index' and 'Index' collide and the model
@@ -3457,6 +3464,9 @@ def _inject_dynamic_format_measures(model):
             expr = measure.get('expression', '')
             name = measure.get('name', '')
             if not fmt or not expr:
+                continue
+            source_type = str(measure.get('_tableau_datatype', '')).casefold()
+            if source_type in ('string', 'str', 'boolean', 'bool', 'date', 'datetime'):
                 continue
 
             # Skip if already a FORMAT wrapper or a time-intelligence measure.
@@ -4174,6 +4184,14 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 if key:
                     col_types.setdefault(key, calc_type)
 
+    calculation_caption_counts = {}
+    for candidate in calculations:
+        _, candidate_caption = _calculation_identity(candidate)
+        if candidate_caption:
+            key = candidate_caption.casefold()
+            calculation_caption_counts[key] = (
+                calculation_caption_counts.get(key, 0) + 1)
+
     for calc in calculations:
         calc_name, caption = _calculation_identity(calc)
         target_caption = dax_context.get('calculation_target_names', {}).get(
@@ -4184,6 +4202,10 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
         has_source_conflict = bool(calc.get('_source_declaration_conflicts'))
         source_conflict_path = source_conflict_paths.get(id(calc), ())
         ownership_path = dax_context.get('ownership_paths', {}).get(id(calc), ())
+        ambiguous_calculation_references = {
+            ref.casefold() for ref in re.findall(r'\[([^\]]+)\]', formula)
+            if calculation_caption_counts.get(ref.casefold(), 0) > 1
+        }
         local_calc_map = dict(calc_map_ctx)
         scoped_calc_map = dax_context.get('fixed_shelf_calc_maps', {}).get(id(calc), {})
         local_param_values = dict(param_values)
@@ -4436,6 +4458,13 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 f'/* TODO: DAX conversion validation failed for {target_kind}: '
                 f'{reason} */ BLANK()'
             )
+        elif ambiguous_calculation_references:
+            target_kind = 'column' if is_calc_col else 'measure'
+            references = ', '.join(sorted(ambiguous_calculation_references))
+            dax_formula = (
+                f'/* TODO: DAX conversion validation failed for {target_kind}: '
+                f'ambiguous calculation reference(s): {references} */ BLANK()'
+            )
         elif ownership_path and 'TODO: DAX conversion validation failed' not in dax_formula:
             dax_formula = (
                 '/* TODO: DAX conversion validation failed for '
@@ -4574,6 +4603,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                     "dataType": map_tableau_to_powerbi_type(datatype),
                     "sourceColumn": caption,
                     "summarizeBy": "none",
+                    "_original_formula": formula,
                 }
             else:
                 # Fallback: keep as DAX calculated column
@@ -4584,6 +4614,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                     "expression": dax_formula,
                     "summarizeBy": "none",
                     "isCalculated": True,
+                    "_original_formula": formula,
                     "_tableau_calculation_identity": {
                         "name": calc.get('name', ''),
                         "caption": calc.get('caption', ''),
@@ -4652,6 +4683,7 @@ def _build_table(table, connection, calculations, columns_metadata, dax_context=
                 "expression": dax_formula,
                 "formatString": _get_format_string(datatype),
                 "displayFolder": _get_display_folder(datatype, role),
+                "_tableau_datatype": datatype,
                 "_tableau_calculation_identity": {
                     "name": calc.get('name', ''),
                     "caption": calc.get('caption', ''),

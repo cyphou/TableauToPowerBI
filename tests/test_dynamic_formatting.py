@@ -59,6 +59,17 @@ class TestDynamicFormatMeasures(unittest.TestCase):
         self.assertEqual(len(measures), 2)
         self.assertIn('€', measures[1]['description'])
 
+    def test_numeric_format_does_not_wrap_tableau_text_measure(self):
+        from tmdl_generator import _inject_dynamic_format_measures
+        model = {
+            'model': {'tables': [{'name': 'T', 'columns': [], 'measures': [
+                {'name': 'Label', 'expression': 'SUM([TextValue])',
+                 'formatString': '$#,0.00', '_tableau_datatype': 'string'}
+            ]}]}
+        }
+        _inject_dynamic_format_measures(model)
+        self.assertEqual(len(model['model']['tables'][0]['measures']), 1)
+
     def test_non_currency_not_formatted(self):
         from tmdl_generator import _inject_dynamic_format_measures
         model = {

@@ -54,15 +54,39 @@ class TestPromoteMeasureDependentCalcColumns(unittest.TestCase):
         self.assertEqual(promoted, [])
         self.assertEqual([column["name"] for column in t["columns"]], ["Flag"])
 
-    def test_expression_is_carried_over_unchanged(self):
+    def test_promoted_numeric_row_expression_gets_iterator_and_note(self):
         expr = "[Total] * 'Sales'[Amount]"
         t = _table(
-            [{"name": "Weighted", "expression": expr, "isCalculated": True}],
+            [{"name": "Weighted", "expression": expr, "dataType": "Double",
+              "isCalculated": True, "_original_formula": "[Total] * [Amount]",
+              "_tableau_calculation_identity": {
+                                    "name": "[Weighted]", "caption": "Weighted"}},
+                         {"name": "Amount", "sourceColumn": "Amount"}],
             [{"name": "Total", "expression": "SUM('Sales'[Amount])"}],
         )
         _promote_measure_dependent_calc_columns(t)
         moved = [m for m in t["measures"] if m["name"] == "Weighted"][0]
-        self.assertEqual(moved["expression"], expr)
+        self.assertIn("Unaggregated row expression best-effort approximation", moved["expression"])
+        self.assertIn("SUMX('Sales',", moved["expression"])
+        self.assertTrue(moved["expression"].endswith(expr + ")"))
+        self.assertEqual(moved["_original_formula"], "[Total] * [Amount]")
+        self.assertEqual(moved["_tableau_calculation_identity"]["name"], "[Weighted]")
+        self.assertTrue(any(
+            annotation.get("name") == "MigrationNote"
+            for annotation in moved.get("annotations", [])
+        ))
+
+    def test_qualified_home_table_measure_reference_promotes(self):
+        t = _table(
+            [{"name": "Weighted", "expression": "'Sales'[Total] * 'Sales'[Amount]",
+                            "dataType": "Double", "isCalculated": True},
+                         {"name": "Amount", "sourceColumn": "Amount"}],
+            [{"name": "Total", "expression": "SUM('Sales'[Amount])"}],
+        )
+        promoted = _promote_measure_dependent_calc_columns(t)
+        self.assertEqual(promoted, [("Weighted", ["Total"])])
+        moved = next(m for m in t["measures"] if m["name"] == "Weighted")
+        self.assertIn("SUMX('Sales',", moved["expression"])
 
     def test_calc_column_over_plain_columns_is_left_alone(self):
         t = _table(
@@ -113,10 +137,7 @@ class TestPromoteMeasureDependentCalcColumns(unittest.TestCase):
         self.assertEqual(_promote_measure_dependent_calc_columns(t), [])
         self.assertEqual(len(t["columns"]), 1)
 
-    def test_aggregation_of_promoted_measure_without_grain_is_diagnostic(self):
-        # Another measure read the column as MIN('Sales'[Weighted]); once the
-        # column is promoted, stripping MIN would silently change its source
-        # shelf/total grain.  An unproven rewrite must remain diagnostic.
+    def test_aggregation_of_promoted_measure_is_lowered_with_a_visible_warning(self):
         t = _table(
             [{"name": "Weighted", "expression": "[Total] * 'Sales'[Amount]",
               "isCalculated": True}],
@@ -129,12 +150,15 @@ class TestPromoteMeasureDependentCalcColumns(unittest.TestCase):
         self.assertIn("Weighted", {measure["name"] for measure in t["measures"]})
         _unwrap_aggregations_of_measures(t)
         grand = [m for m in t["measures"] if m["name"] == "Grand"][0]
-        self.assertRegex(
-            grand["expression"],
-            r"(?is)^/\*\s*TODO: DAX conversion validation failed\b"
-            r"[^*]*\baggregation\b[^*]*\bshelf\b[^*]*\bgrain\b"
-            r"[^*]*\*/\s*BLANK\(\)\s*$",
-        )
+        self.assertIn("Measure aggregation best-effort approximation", grand["expression"])
+        self.assertIn("MINX('Sales', [Weighted])", grand["expression"])
+        self.assertNotIn("TODO: DAX conversion validation failed", grand["expression"])
+        self.assertTrue(any(
+            annotation.get("name") == "MigrationNote"
+            and "MIN over measure Weighted lowered to MINX"
+            in annotation.get("value", "")
+            for annotation in grand.get("annotations", [])
+        ))
 
 
 if __name__ == "__main__":

@@ -12,9 +12,55 @@ import re
 logger = logging.getLogger(__name__)
 
 _NUMERIC_DATA_TYPES = frozenset({'double', 'int64', 'decimal'})
+_NUMERIC_SOURCE_TYPES = frozenset({
+    *_NUMERIC_DATA_TYPES, 'real', 'float', 'integer', 'int', 'currency',
+})
+_DAX_FIELD_REF_RE = re.compile(
+    r"(?:(?P<owner>'(?:[^']|'')+'|[^\W\d]\w*)\s*)?"
+    r"\[(?P<column>(?:[^\]]|\]\])+)\]",
+    re.UNICODE,
+)
+_NUMERIC_AGGREGATE_RE = re.compile(
+    r'\b(?:SUM|AVERAGE|MIN|MAX|MEDIAN|PRODUCT|COUNT|COUNTA)\s*\(\s*$',
+    re.IGNORECASE,
+)
 
 
-def _placeholder_data_type(consumer):
+def _is_numeric_use(consumer, column_name, *, placeholder_table, consumer_table):
+    expression = consumer.get('expression', '')
+    if not isinstance(expression, str) or not expression:
+        return False
+    code = re.sub(r'"(?:[^"\\]|\\.|"")*"', ' ', expression)
+    code = re.sub(r'/\*[\s\S]*?\*/|//[^\r\n]*', ' ', code)
+    declared_type = (consumer.get('dataType') or consumer.get('datatype')
+                     or consumer.get('_tableau_datatype') or '')
+    numeric_result = str(declared_type).casefold() in _NUMERIC_SOURCE_TYPES
+    for match in _DAX_FIELD_REF_RE.finditer(code):
+        name = match.group('column').replace(']]', ']')
+        if name.casefold() != column_name.casefold():
+            continue
+        owner = match.group('owner')
+        if owner and owner.startswith("'"):
+            owner = owner[1:-1].replace("''", "'")
+        if owner is not None and owner != placeholder_table:
+            continue
+        if owner is None and consumer_table != placeholder_table:
+            continue
+        prefix = code[max(0, match.start() - 64):match.start()]
+        if _NUMERIC_AGGREGATE_RE.search(prefix):
+            return True
+        suffix = re.sub(r'^\s*\)+\s*', '', code[match.end():]).lstrip()
+        prefix = re.sub(r'\s*\(+\s*$', '', prefix)
+        arithmetic = ('+', '-', '*', '/', '^')
+        if ((prefix.rstrip()[-1:] in arithmetic
+             or suffix[:1] in arithmetic)
+                and (numeric_result or (prefix.rstrip()[-1:] != '+'
+                                        and suffix[:1] != '+'))):
+            return True
+    return False
+
+
+def _placeholder_data_type(consumer, *, numeric_use=False):
     """Type a placeholder after whatever needed it.
 
     A string column cannot be summed or negated, so a placeholder typed
@@ -22,7 +68,39 @@ def _placeholder_data_type(consumer):
     visual that aggregates it -- Power BI reports Missing_References.
     """
     data_type = consumer.get('dataType') or ''
-    return data_type if data_type.lower() in _NUMERIC_DATA_TYPES else 'string'
+    if data_type.lower() in _NUMERIC_DATA_TYPES:
+        return data_type
+    return 'double' if numeric_use else 'string'
+
+
+def _widen_numeric_placeholders(model):
+    tables = model.get('model', {}).get('tables', [])
+    widened = 0
+    for table in tables:
+        table_name = table.get('name', '')
+        consumers = [*table.get('measures', []), *table.get('columns', [])]
+        for column in table.get('columns', []):
+            if (not column.get('isCalculated')
+                    or column.get('expression', '').strip().upper() != 'BLANK()'):
+                continue
+            if not any(
+                    annotation.get('name') == 'MigrationNote'
+                    and annotation.get('value', '').startswith(
+                        'Self-heal: placeholder column created')
+                    for annotation in column.get('annotations', [])):
+                continue
+            if any(_is_numeric_use(
+                    consumer, column.get('name', ''),
+                    placeholder_table=table_name,
+                    consumer_table=consumer_table.get('name', ''))
+                    for consumer_table in tables
+                    for consumer in [*consumer_table.get('measures', []),
+                                     *consumer_table.get('columns', [])]
+                    if consumer is not column):
+                if column.get('dataType', '').casefold() not in _NUMERIC_DATA_TYPES:
+                    column['dataType'] = 'double'
+                    widened += 1
+    return widened
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -265,7 +343,10 @@ def _self_heal_model(model, recovery=None):
                         continue
                     t.setdefault('columns', []).append({
                         'name': missing_col,
-                        'dataType': _placeholder_data_type(measure),
+                        'dataType': _placeholder_data_type(
+                            measure, numeric_use=_is_numeric_use(
+                                measure, missing_col, placeholder_table=tname,
+                                consumer_table=tname)),
                         # A placeholder must not claim source data: a physical
                         # column whose partition never produces it makes Power
                         # BI report the field as broken.
@@ -377,7 +458,10 @@ def _self_heal_model(model, recovery=None):
                 # Add placeholder
                 t.setdefault('columns', []).append({
                     'name': q_col,
-                    'dataType': _placeholder_data_type(col),
+                    'dataType': _placeholder_data_type(
+                        col, numeric_use=_is_numeric_use(
+                            col, q_col, placeholder_table=tname,
+                            consumer_table=tname)),
                     'expression': 'BLANK()',
                     'isCalculated': True,
                     'isHidden': True,
@@ -414,7 +498,10 @@ def _self_heal_model(model, recovery=None):
                 # Add placeholder
                 t.setdefault('columns', []).append({
                     'name': ref,
-                    'dataType': _placeholder_data_type(col),
+                    'dataType': _placeholder_data_type(
+                        col, numeric_use=_is_numeric_use(
+                            col, ref, placeholder_table=tname,
+                            consumer_table=tname)),
                     'expression': 'BLANK()',
                     'isCalculated': True,
                     'isHidden': True,
@@ -922,4 +1009,5 @@ def _self_heal_model(model, recovery=None):
     except Exception:  # never block migration
         pass
 
+    repairs += _widen_numeric_placeholders(model)
     return repairs

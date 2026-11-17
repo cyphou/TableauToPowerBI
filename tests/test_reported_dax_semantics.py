@@ -394,6 +394,22 @@ class TestReportedRowGrain(unittest.TestCase):
 
     _row_formula = "IF [Facture] > 0.02 * [Revenu] THEN [Poids] ELSE 0 END"
 
+    def test_measure_aggregate_reaches_best_effort_postprocessor(self):
+        measure = convert_tableau_formula_to_dax(
+            "SUM([SourceMeasure])", table_name="Fact",
+            column_table_map={}, measure_names={"SourceMeasure"},
+            table_columns={"Amount"},
+        )
+        self.assertIn("SUM([SourceMeasure])", measure)
+        self.assertNotIn("TODO", measure)
+
+        column = convert_tableau_formula_to_dax(
+            "SUM([SourceMeasure])", table_name="Fact",
+            column_table_map={}, measure_names={"SourceMeasure"},
+            table_columns={"Amount"}, is_calc_column=True,
+        )
+        _assert_unsupported(self, column, "aggregation", "calculation")
+
     def test_unproven_cross_table_row_measure_emits_warned_iterator(self):
         expression = convert_tableau_formula_to_dax(
             self._row_formula, table_name="Zone", column_table_map=_COLUMN_OWNERS,
@@ -847,7 +863,8 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
             "{ FIXED [Sector], [Unknown] : "
             "SUM([Logements double]) / SUM([Conso]) }",
             table_name="Housing", table_columns=["Conso"],
-            column_table_map={"Sector": "OtherHousing", "Conso": "Housing"},
+            column_table_map={"Sector": "OtherHousing", "Conso": "Housing",
+                              "Logements double": "Housing"},
             measure_names={"Logements double"},
             fixed_shelf_aggregation="SUM",
             row_approx_measure_names={"Logements double"},
@@ -856,7 +873,7 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
         self.assertIn("relationship propagation unverified", expression)
         self.assertIn("missing schema dimension(s) Unknown omitted", expression)
         self.assertIn(
-            "SUM over row-expression measure(s) Logements double unwrapped", expression)
+            "SUM over row-expression measure Logements double unwrapped", expression)
         self.assertIn(
             "SUMX(SUMMARIZECOLUMNS('OtherHousing'[Sector]), "
             "CALCULATE(DIVIDE([Logements double], SUM('Housing'[Conso])))",
@@ -885,7 +902,8 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
             "SUM({ FIXED [Sector] : "
             "SUM([Logements double]) / SUM([Conso]) })",
             table_name="Housing", table_columns=["Sector", "Conso"],
-            column_table_map={"Sector": "Housing", "Conso": "Housing"},
+            column_table_map={"Sector": "Housing", "Conso": "Housing",
+                              "Logements double": "Housing"},
             measure_names={"Logements double"},
             fixed_shelf_aggregation="SUM", validate_output=True,
             row_approx_measure_names={"Logements double"},
@@ -903,13 +921,16 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
         expression = convert_tableau_formula_to_dax(
             "{ FIXED [Sector] : SUM([Logements double]) }",
             table_name="Housing", table_columns=["Sector"],
-            column_table_map={"Sector": "Housing"},
+            column_table_map={"Sector": "Housing",
+                              "Logements double": "Housing"},
             measure_names={"Logements double"},
             fixed_shelf_aggregation="SUM",
             row_approx_measure_names={"Logements double"},
         )
         self.assertIn(
-            "SUM over row-expression measure Logements double unwrapped", expression)
+            "SUM over row-expression measure Logements double aggregated with shelf semantics",
+            expression,
+        )
         self.assertIn(
             "SUMX(VALUES('Housing'[Sector]), CALCULATE([Logements double]))",
             expression,
@@ -923,7 +944,12 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
             measure_names={"OrdinaryMeasure"},
             fixed_shelf_aggregation="SUM",
         )
-        _assert_unsupported(self, ordinary_measure, "FIXED")
+        self.assertIn("ordinary measure OrdinaryMeasure", ordinary_measure)
+        self.assertIn(
+            "SUMX(VALUES('Housing'[Sector]), CALCULATE([OrdinaryMeasure]))",
+            ordinary_measure,
+        )
+        self.assertNotIn("TODO", ordinary_measure)
 
     def test_fixed_shelf_lowers_numeric_row_expression_and_scalar_function(self):
         from powerbi_import.dax_validator import validate_dax_expression
@@ -1094,12 +1120,12 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
                 # No silent EXCLUDE-like removal of either FIXED dimension.
                 self.assertNotIn("REMOVEFILTERS", expression.upper())
 
-    def test_aggregating_a_fixed_measure_is_not_silently_unwrapped(self):
+    def test_aggregating_a_fixed_measure_is_unwrapped_with_a_visible_warning(self):
         expression = convert_tableau_formula_to_dax(
             "SUM([Logements par secteur])", table_name="Zone",
             measure_names={"Logements par secteur"}, table_columns=_ZONE_COLUMNS)
-        _assert_unsupported(self, expression, "aggregation", "shelf", "grain")
-        self.assertNotEqual(expression, "[Logements par secteur]")
+        self.assertIn("SUM([Logements par secteur])", expression)
+        self.assertNotIn("TODO: DAX conversion validation failed", expression)
 
         table = {
             "name": "Zone",
@@ -1113,7 +1139,9 @@ class TestReportedFixedGrainStatic(unittest.TestCase):
         _unwrap_aggregations_of_measures(table)
         measures = {measure["name"]: measure["expression"]
                     for measure in table["measures"]}
-        _assert_unsupported(self, measures["Total"], "aggregation", "shelf", "grain")
+        self.assertIn("Measure aggregation best-effort approximation", measures["Total"])
+        self.assertIn("[Logements par secteur]", measures["Total"])
+        self.assertNotIn("TODO: DAX conversion validation failed", measures["Total"])
         self.assertEqual(measures["Physical sum"], "SUM('Zone'[Logements])")
 
     def test_dependent_measure_does_not_hide_an_unsupported_fixed_as_a_number(self):
@@ -2051,7 +2079,9 @@ class TestReportedScalarNumericMinMax(unittest.TestCase):
                             for measure in table["measures"]}
                 self.assertEqual(measures["C"], f"{function}('Facts'[Amount])")
                 self.assertEqual(self._declaration(content, "measure", "C"), measures["C"])
-                _assert_unsupported(self, measures["Total"])
+                self.assertIn("Measure aggregation best-effort approximation", measures["Total"])
+                self.assertIn("[C]", measures["Total"])
+                self.assertNotIn("TODO: DAX conversion validation failed", measures["Total"])
 
     def test_real_pipeline_does_not_invent_missing_or_ambiguous_evidence(self):
         cases = ("unknown column", "missing type", "text type", "missing owner",
@@ -4088,7 +4118,7 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
                       measures["EstAuDessus"])
         self.assertIn("SUMX('Zone'", measures["EstAuDessus"])
         self.assertIn(
-            "SUM over row-expression measure EstAuDessus unwrapped",
+            "SUM over row-expression measure EstAuDessus aggregated with shelf semantics unverified",
             measures["FixedFromRowApprox"],
         )
         self.assertIn(
@@ -4116,7 +4146,7 @@ class TestReportedDaxDiagnosticsIntegration(unittest.TestCase):
             for annotation in part_measure.get("annotations", [])
         ))
         _assert_unsupported(self, measures["FixedHousing"], "FIXED", "grain")
-        _assert_unsupported(self, measures["TotalHousing"], "aggregation", "grain")
+        _assert_unsupported(self, measures["TotalHousing"], "unsupported", "grain")
         self.assertEqual(measures["Derived"], "[EstAuDessus] + 1")
 
     def test_serialized_fallbacks_reach_production_quality_without_runtime_claim(self):

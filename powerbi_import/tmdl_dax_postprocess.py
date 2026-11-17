@@ -261,6 +261,10 @@ def _promote_measure_dependent_calc_columns(result_table):
         return []
 
     promoted = []
+    home_table = result_table.get('name', '')
+    physical_columns = {c.get('name', '') for c in result_table.get('columns', [])}
+    numeric_types = {'double', 'int64', 'decimal', 'currency'}
+    text_date_types = {'string', 'text', 'date', 'datetime'}
     # A promotion can make another column measure-dependent, so iterate.
     for _ in range(len(result_table.get("columns", [])) + 1):
         kept, changed = [], False
@@ -271,16 +275,56 @@ def _promote_measure_dependent_calc_columns(result_table):
                 kept.append(col)
                 continue
             refs, _ = _dax_dependency_tokens(expr)
-            called = sorted({ref_name for owner, ref_name, _ in refs
-                             if owner is None and ref_name in measure_names})
+            called = sorted({
+                ref_name for owner, ref_name, _ in refs
+                if ref_name in measure_names and owner in (None, result_table.get('name', ''))
+            })
             if not called or name in measure_names:
                 kept.append(col)
                 continue
-            measure = {"name": name, "expression": expr}
+            promoted_expression = expr
+            row_refs = {
+                ref_name for owner, ref_name, _ in refs
+                if ref_name in physical_columns and ref_name not in measure_names
+                and owner in (None, home_table)
+            }
+            data_type = str(col.get('dataType', '')).casefold()
+            has_aggregate = bool(re.search(
+                r'\b(?:SUM|AVERAGE|COUNT|MIN|MAX|MEDIAN|PRODUCT|'
+                r'SUMX|AVERAGEX|COUNTX|MINX|MAXX|PRODUCTX)\s*\(',
+                _mask_dax_noncode(expr), re.IGNORECASE,
+            ))
+            if row_refs and not has_aggregate and data_type != 'boolean':
+                if data_type in numeric_types:
+                    iterator = 'SUMX'
+                elif data_type in text_date_types:
+                    iterator = 'MAXX'
+                else:
+                    iterator = ''
+                if iterator:
+                    note = (
+                        'Unaggregated row expression best-effort approximation; '
+                        'row scope, shelf aggregation and total grain unverified'
+                    )
+                    safe_table = "'" + home_table.replace("'", "''") + "'"
+                    promoted_expression = (
+                        f'/* {note} */ {iterator}({safe_table}, {expr})')
+            measure = {
+                "name": name,
+                "expression": promoted_expression,
+                "_tableau_calculation_identity": col.get(
+                    '_tableau_calculation_identity', {}),
+                "_original_formula": col.get('_original_formula', ''),
+            }
             for key in ("formatString", "isHidden", "description",
                         "displayFolder"):
                 if key in col:
                     measure[key] = col[key]
+            if promoted_expression != expr:
+                measure['_migration_note'] = note
+                measure.setdefault('annotations', []).append({
+                    'name': 'MigrationNote', 'value': note,
+                })
             result_table["measures"].append(measure)
             measure_names.add(name)
             promoted.append((name, called))
@@ -297,13 +341,7 @@ def _promote_measure_dependent_calc_columns(result_table):
 
 
 def _unwrap_aggregations_of_measures(result_table):
-    """Reject aggregation of a measure when its source grain is unknown.
-
-    Removing SUM/MIN/etc. fixes DAX syntax but can change the Tableau shelf
-    and total result, especially when the measure represents a FIXED value.
-    Only the semantic owner can establish that the outer aggregation is
-    redundant or compile it over the correct source grain.
-    """
+    """Lower aggregate-over-measure forms to visible best-effort iterators."""
     _all_measure_names = {m["name"] for m in result_table["measures"]}
     _column_names = {c.get("name", "") for c in result_table.get("columns", [])}
     home_table = result_table.get("name", "")
@@ -325,21 +363,309 @@ def _unwrap_aggregations_of_measures(result_table):
                 expr = expr[:match.start()] + '[' + match.group('col') + ']' + expr[match.end():]
         meas["expression"] = expr
     _AGG_OF_MEASURE_RE = re.compile(
-        r'\b(SUM|AVERAGE|COUNT|MIN|MAX)\s*\(\s*\[((?:[^\]]|\]\])+)\]\s*\)',
+        r'\b(SUM|AVERAGE|COUNT|MIN|MAX|MEDIAN|PRODUCT|'
+        r'STDEV\.[SP]|VAR\.[SP])\s*\(\s*'
+        r"(?:(?P<owner>'(?:[^']|'')+'|[^\W\d]\w*)\s*)?"
+        r'\[(?P<name>(?:[^\]]|\]\])*)\]\s*\)',
         re.IGNORECASE,
     )
+    _MEASURE_ITERATORS = {
+        'AVERAGE': 'AVERAGEX', 'COUNT': 'COUNTX', 'MAX': 'MAXX',
+        'MEDIAN': 'MEDIANX', 'MIN': 'MINX', 'PRODUCT': 'PRODUCTX',
+        'STDEV.S': 'STDEVX.S', 'STDEV.P': 'STDEVX.P',
+        'VAR.S': 'VARX.S', 'VAR.P': 'VARX.P',
+    }
+    _ROW_APPROX_RE = re.compile(
+        r'^\s*/\*\s*Unaggregated row expression best-effort approximation;'
+        r'[^*]*\*/\s*(?P<iterator>SUMX|MAXX)\s*\(\s*'
+        r'(?P<table>\'(?:[^\']|\'\')+\')\s*,\s*(?P<body>.*)\)\s*$',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def row_expression(measure):
+        match = _ROW_APPROX_RE.match(measure.get('expression', ''))
+        if not match:
+            return None
+        return match.group('table'), match.group('body')
+
+    measures_by_name = {m.get('name', '').casefold(): m
+                         for m in result_table['measures']
+                         if isinstance(m.get('name'), str)}
     for meas in result_table["measures"]:
         expr = meas.get("expression", "")
         if not expr:
             continue
+        edits = []
+        notes = []
         for match in _AGG_OF_MEASURE_RE.finditer(_mask_dax_noncode(expr)):
-            name = match.group(2).replace(']]', ']')
-            if name in _all_measure_names and name not in _column_names:
-                meas["expression"] = _unsupported_measure_expression(
-                    'aggregation of a calculation requires its source shelf '
-                    'and total grain')
-                break
+            name = match.group('name').replace(']]', ']')
+            owner = match.group('owner')
+            owner = (owner[1:-1].replace("''", "'")
+                     if owner and owner.startswith("'") else owner)
+            if (name.casefold() not in measures_by_name
+                    or name in _column_names
+                    or (owner is not None and owner != home_table)):
+                continue
+            source_measure = measures_by_name[name.casefold()]
+            if 'TODO: DAX conversion validation failed' in source_measure.get(
+                    'expression', ''):
+                continue
+            aggregate = match.group(1).upper()
+            safe_name = '[' + name.replace(']', ']]') + ']'
+            if aggregate == 'SUM':
+                replacement = safe_name
+                note = (f'SUM over measure {name} unwrapped; source shelf and '
+                        'total grain unverified')
+            else:
+                measure = source_measure
+                row = row_expression(measure)
+                table = (row[0] if row else
+                         "'" + home_table.replace("'", "''") + "'")
+                body = row[1] if row else safe_name
+                iterator = _MEASURE_ITERATORS[aggregate]
+                replacement = f'{iterator}({table}, {body})'
+                note = (f'{aggregate} over measure {name} lowered to {iterator}; '
+                        'source shelf and total grain unverified')
+            edits.append((match.start(), match.end(), replacement))
+            notes.append(note)
+        for start, end, replacement in reversed(edits):
+            expr = expr[:start] + replacement + expr[end:]
+        if edits:
+            note = '; '.join(dict.fromkeys(notes))
+            meas['expression'] = (
+                f'/* Measure aggregation best-effort approximation; {note} */ {expr}')
+            meas['_migration_note'] = '; '.join(filter(None, (
+                meas.get('_migration_note', ''), note)))
+            annotations = meas.setdefault('annotations', [])
+            migration_annotation = next(
+                (item for item in annotations
+                 if item.get('name') == 'MigrationNote'), None)
+            if migration_annotation is None:
+                annotations.append({'name': 'MigrationNote', 'value': note})
+            elif note not in migration_annotation.get('value', ''):
+                migration_annotation['value'] = '; '.join(filter(None, (
+                    migration_annotation.get('value', ''), note)))
 
+
+_COLUMN_CONTEXT_FUNCS = frozenset({
+    'SUM', 'AVERAGE', 'COUNT', 'COUNTA', 'COUNTBLANK', 'COUNTROWS',
+    'MIN', 'MAX', 'DISTINCTCOUNT', 'DISTINCTCOUNTNOBLANK',
+    'MEDIAN', 'PERCENTILE',
+    'SUMX', 'AVERAGEX', 'COUNTX', 'MINX', 'MAXX', 'PRODUCTX',
+    'CONCATENATEX', 'MEDIANX', 'PERCENTILEX',
+    'FILTER', 'ADDCOLUMNS', 'SELECTCOLUMNS',
+    'GENERATE', 'GENERATEALL', 'RANKX', 'TOPN',
+    'SUMMARIZE', 'SUMMARIZECOLUMNS', 'GROUPBY',
+    'RELATED', 'RELATEDTABLE', 'LOOKUPVALUE', 'TREATAS',
+    'VALUES', 'DISTINCT', 'ALL', 'ALLEXCEPT', 'ALLNOBLANKROW',
+    'ALLSELECTED', 'REMOVEFILTERS',
+    'EARLIER', 'EARLIEST', 'SELECTEDVALUE',
+    'HASONEVALUE', 'HASONEFILTER', 'ISINSCOPE',
+    'USERELATIONSHIP', 'CROSSFILTER',
+})
+
+
+def _enclosing_calls(masked_text, position):
+    """Return the enclosing DAX function stack with current argument indexes."""
+    calls = []
+    text_before = masked_text[:position]
+    i = 0
+    while i < len(text_before):
+        ch = text_before[i]
+        if ch in ("'", '['):
+            close = ']' if ch == '[' else "'"
+            i += 1
+            while i < len(text_before):
+                if text_before[i] == close:
+                    if i + 1 < len(text_before) and text_before[i + 1] == close:
+                        i += 2
+                    else:
+                        i += 1
+                        break
+                else:
+                    i += 1
+        elif ch == '(':
+            j = i - 1
+            while j >= 0 and text_before[j].isspace():
+                j -= 1
+            func_end = j + 1
+            while j >= 0 and (text_before[j].isalnum() or text_before[j] in '_.'):
+                j -= 1
+            calls.append([text_before[j + 1:func_end].upper(), 0])
+            i += 1
+        elif ch == ')':
+            if calls:
+                calls.pop()
+            i += 1
+        elif ch == ',' and calls:
+            calls[-1][1] += 1
+            i += 1
+        else:
+            i += 1
+    return tuple((name, index) for name, index in calls)
+
+
+def _consumed_as_column(enclosing_calls):
+    return any(name in _COLUMN_CONTEXT_FUNCS
+               or (name in ('CALCULATE', 'CALCULATETABLE') and index > 0)
+               for name, index in enclosing_calls)
+
+
+def _matching_dax_paren(expression, opening):
+    depth = 0
+    index = opening
+    while index < len(expression):
+        if expression.startswith(('//', '--'), index):
+            newline = expression.find('\n', index + 2)
+            index = len(expression) if newline < 0 else newline + 1
+        elif expression.startswith('/*', index):
+            end = expression.find('*/', index + 2)
+            index = len(expression) if end < 0 else end + 2
+        elif expression[index] in ('"', "'"):
+            delimiter = expression[index]
+            index += 1
+            while index < len(expression):
+                if expression[index] == delimiter:
+                    if index + 1 < len(expression) and expression[index + 1] == delimiter:
+                        index += 2
+                    else:
+                        index += 1
+                        break
+                else:
+                    index += 1
+        elif expression[index] == '[':
+            index += 1
+            while index < len(expression):
+                if expression[index] == ']' and index + 1 < len(expression) and expression[index + 1] == ']':
+                    index += 2
+                elif expression[index] == ']':
+                    index += 1
+                    break
+                else:
+                    index += 1
+        elif expression[index] == '(':
+            depth += 1
+            index += 1
+        elif expression[index] == ')':
+            depth -= 1
+            if depth == 0:
+                return index
+            index += 1
+        else:
+            index += 1
+    return None
+
+
+def _iterate_row_expressions_over_joins(model):
+    """Expand a simple row iterator over one explicit direct source join."""
+    tables = {table.get('name', ''): table
+              for table in model.get('model', {}).get('tables', [])}
+    relationships = model.get('model', {}).get('relationships', [])
+    iterator_re = re.compile(
+        r'\b(?P<iterator>SUMX|AVERAGEX|MINX|MAXX|COUNTX|PRODUCTX)\s*\(\s*'
+        r"(?P<table>'(?:[^']|'')+')\s*,", re.IGNORECASE)
+    reference_re = re.compile(
+        r"(?<![\w']) (?P<owner>'(?:[^']|'')+'|[^\W\d]\w*)"
+        r"\[(?P<column>(?:[^\]]|\]\])+)\]".replace(' ', ''), re.UNICODE)
+
+    def quoted_table(name):
+        return "'" + name.replace("'", "''") + "'"
+
+    changed = 0
+    for model_table in tables.values():
+        for measure in model_table.get('measures', []):
+            expression = measure.get('expression', '')
+            if not expression:
+                continue
+            edits, notes = [], []
+            for iterator_match in iterator_re.finditer(expression):
+                iterated_table = iterator_match.group('table')[1:-1].replace("''", "'")
+                if iterated_table not in tables:
+                    continue
+                opening = expression.find('(', iterator_match.start(), iterator_match.end())
+                closing = _matching_dax_paren(expression, opening)
+                if closing is None:
+                    continue
+                body = expression[iterator_match.end():closing]
+                masked_body = _mask_dax_noncode(body)
+                foreign_tables = []
+                for reference in reference_re.finditer(masked_body):
+                    owner = reference.group('owner')
+                    owner = owner[1:-1].replace("''", "'") if owner.startswith("'") else owner
+                    if owner == iterated_table:
+                        continue
+                    if _consumed_as_column(_enclosing_calls(masked_body, reference.start())):
+                        continue
+                    field = reference.group('column').replace(']]', ']')
+                    if field not in {col.get('name') for col in tables.get(owner, {}).get('columns', [])}:
+                        continue
+                    if owner not in foreign_tables:
+                        foreign_tables.append(owner)
+                if not foreign_tables:
+                    continue
+
+                source_expression = iterator_match.group('table')
+                warnings, valid = [], True
+                for foreign_table in foreign_tables:
+                    candidates = [rel for rel in relationships
+                                  if rel.get('fromTable') == iterated_table
+                                  and rel.get('toTable') == foreign_table
+                                  and not str(rel.get('name', '')).startswith('inferred_')
+                                  and rel.get('joinType', '').casefold() in ('left', 'inner', '')]
+                    active = [rel for rel in candidates if rel.get('isActive', True)]
+                    if active:
+                        candidates = active
+                    if len(candidates) != 1:
+                        valid = False
+                        break
+                    relationship = candidates[0]
+                    left_key = relationship.get('fromColumn')
+                    right_key = relationship.get('toColumn')
+                    if (left_key not in {col.get('name') for col in tables[iterated_table].get('columns', [])}
+                            or right_key not in {col.get('name') for col in tables[foreign_table].get('columns', [])}):
+                        valid = False
+                        break
+                    join_type = relationship.get('joinType', '').casefold()
+                    join_function = 'GENERATE' if join_type == 'inner' else 'GENERATEALL'
+                    left_ref = iterator_match.group('table') + '[' + left_key.replace(']', ']]') + ']'
+                    right_ref = quoted_table(foreign_table) + '[' + right_key.replace(']', ']]') + ']'
+                    source_expression = (
+                        f"{join_function}({source_expression}, FILTER({quoted_table(foreign_table)}, "
+                        f"{right_ref} = {left_ref}))")
+                    warnings.append(
+                        f"joined row source {iterated_table} with {foreign_table}; "
+                        f"{join_type or 'left join assumed, join type unverified'}; "
+                        "relationship cardinality unverified")
+                if valid:
+                    edits.append((iterator_match.start('table'), iterator_match.end('table'),
+                                  source_expression))
+                    notes.extend(warnings)
+            if not edits:
+                continue
+            for start, end, replacement in reversed(edits):
+                expression = expression[:start] + replacement + expression[end:]
+            try:
+                from powerbi_import.dax_validator import validate_dax_expression
+                if validate_dax_expression(expression):
+                    continue
+            except (ImportError, OSError, ValueError):
+                continue
+            note = 'Row iteration over joined source best-effort approximation; ' + '; '.join(
+                dict.fromkeys(notes))
+            measure['expression'] = f'/* {note} */ {expression}'
+            measure['_migration_note'] = '; '.join(filter(None, (
+                measure.get('_migration_note', ''), note)))
+            annotations = measure.setdefault('annotations', [])
+            migration_annotation = next(
+                (item for item in annotations
+                 if item.get('name') == 'MigrationNote'), None)
+            if migration_annotation is None:
+                annotations.append({'name': 'MigrationNote', 'value': note})
+            elif note not in migration_annotation.get('value', ''):
+                migration_annotation['value'] = '; '.join(filter(None, (
+                    migration_annotation.get('value', ''), note)))
+            changed += 1
+    return changed
 
 
 def _wrap_bare_cross_table_refs(result_table):
@@ -352,22 +678,6 @@ def _wrap_bare_cross_table_refs(result_table):
         r"\[(?P<col>(?:[^\]]|\]\])+)\]",
         re.UNICODE,
     )
-    _COLUMN_CONTEXT_FUNCS = frozenset({
-        'SUM', 'AVERAGE', 'COUNT', 'COUNTA', 'COUNTBLANK', 'COUNTROWS',
-        'MIN', 'MAX', 'DISTINCTCOUNT', 'DISTINCTCOUNTNOBLANK',
-        'MEDIAN', 'PERCENTILE',
-        'SUMX', 'AVERAGEX', 'COUNTX', 'MINX', 'MAXX', 'PRODUCTX',
-        'CONCATENATEX', 'MEDIANX', 'PERCENTILEX',
-        'FILTER', 'ADDCOLUMNS', 'SELECTCOLUMNS',
-        'GENERATE', 'GENERATEALL', 'RANKX', 'TOPN',
-        'SUMMARIZE', 'SUMMARIZECOLUMNS', 'GROUPBY',
-        'RELATED', 'RELATEDTABLE', 'LOOKUPVALUE', 'TREATAS',
-        'VALUES', 'DISTINCT', 'ALL', 'ALLEXCEPT', 'ALLNOBLANKROW',
-        'ALLSELECTED', 'REMOVEFILTERS',
-        'EARLIER', 'EARLIEST', 'SELECTEDVALUE',
-        'HASONEVALUE', 'HASONEFILTER', 'ISINSCOPE',
-        'USERELATIONSHIP', 'CROSSFILTER',
-    })
     for meas in result_table["measures"]:
         expr = meas.get("expression", "")
         if not expr:
@@ -380,47 +690,7 @@ def _wrap_bare_cross_table_refs(result_table):
             if (owner == home_table and col_name in _all_measure_names
                     and col_name not in _column_names):
                 continue
-            # Strings and comments are masked; quoted table names and
-            # bracketed identifiers must also be skipped while counting.
-            func_stack = []  # [function name, current argument index]
-            text_before = masked[:match.start()]
-            i = 0
-            while i < len(text_before):
-                ch = text_before[i]
-                if ch in ("'", '['):
-                    close = ']' if ch == '[' else "'"
-                    i += 1
-                    while i < len(text_before):
-                        if text_before[i] == close:
-                            if i + 1 < len(text_before) and text_before[i + 1] == close:
-                                i += 2
-                            else:
-                                i += 1
-                                break
-                        else:
-                            i += 1
-                elif ch == '(':
-                    j = i - 1
-                    while j >= 0 and text_before[j].isspace():
-                        j -= 1
-                    func_end = j + 1
-                    while j >= 0 and (text_before[j].isalnum()
-                                      or text_before[j] in '_.'):
-                        j -= 1
-                    func_stack.append([text_before[j + 1:func_end].upper(), 0])
-                    i += 1
-                elif ch == ')':
-                    if func_stack:
-                        func_stack.pop()
-                    i += 1
-                elif ch == ',' and func_stack:
-                    func_stack[-1][1] += 1
-                    i += 1
-                else:
-                    i += 1
-            if any(name in _COLUMN_CONTEXT_FUNCS
-                   or (name in ('CALCULATE', 'CALCULATETABLE') and index > 0)
-                   for name, index in func_stack):
+            if _consumed_as_column(_enclosing_calls(masked, match.start())):
                 continue
             meas["expression"] = _unsupported_measure_expression(
                 'bare column requires source row scope, shelf aggregation '

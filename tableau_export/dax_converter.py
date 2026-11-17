@@ -1304,10 +1304,11 @@ def _compile_approximate_fixed_aggregate_ratio(
                         if isinstance(column_table_map, dict) else None)
         is_measure = (name.casefold() in measures
                       and name.casefold() not in available_folded
-                      and mapped_owner is None)
+                      and (mapped_owner is None
+                           or (name.casefold() in row_approx_measures
+                               and mapped_owner == table_name)))
         if is_measure:
-            if (aggregate != 'SUM'
-                    or name.casefold() not in row_approx_measures
+            if (name.casefold() not in row_approx_measures
                     or (owner is not None and owner != table_name)):
                 return None
             return ('measure', aggregate, name)
@@ -1366,7 +1367,13 @@ def _compile_approximate_fixed_aggregate_ratio(
     def operand(binding):
         kind, aggregate, name = binding
         if kind == 'measure':
-            return '[' + name.replace(']', ']]') + ']'
+            measure_ref = '[' + name.replace(']', ']]') + ']'
+            if aggregate == 'SUM':
+                return measure_ref
+            iterator = _NUMERIC_ROW_ITERATORS.get(aggregate)
+            if iterator is None:
+                return measure_ref
+            return f'{iterator}({safe_table}, {measure_ref})'
         if kind == 'row_expression':
             return name
         return aggregate + '(' + column(name) + ')'
@@ -1383,17 +1390,22 @@ def _compile_approximate_fixed_aggregate_ratio(
     if missing_dims:
         warnings.append(f"missing schema dimension(s) {', '.join(missing_dims)} omitted")
     measure_operands = [
-        name for kind, _, name in (numerator_binding, denominator_binding)
+        (aggregate, name)
+        for kind, aggregate, name in (numerator_binding, denominator_binding)
         if kind == 'measure'
     ]
     row_expression_operands = [
         aggregate for kind, aggregate, _ in (numerator_binding, denominator_binding)
         if kind == 'row_expression'
     ]
-    if measure_operands:
-        warnings.append(
-            f"SUM over row-expression measure(s) {', '.join(measure_operands)} "
-            "unwrapped")
+    for aggregate, name in measure_operands:
+        if aggregate == 'SUM':
+            warnings.append(f"SUM over row-expression measure {name} unwrapped")
+        else:
+            warnings.append(
+                f"{aggregate} over row-expression measure {name} iterated with "
+                f"{_NUMERIC_ROW_ITERATORS.get(aggregate, 'iterator')}"
+            )
     if row_expression_operands:
         iterators = sorted({
             _NUMERIC_ROW_ITERATORS[aggregate]
@@ -1518,19 +1530,20 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
     measures = {name.casefold() for name in measure_names if isinstance(name, str)}
     row_approx_measures = {name.casefold() for name in row_approx_measure_names
                            if isinstance(name, str)}
+    val_is_measure = False
     val_is_row_measure = False
     val_is_row_expression = not value_is_ref
     row_expression_dax = None
     if value_is_ref:
+        val_is_measure = (val_name.casefold() in measures
+                          and val_name.casefold() not in available_folded
+                          and (val_name not in column_table_map
+                               or (val_name.casefold() in row_approx_measures
+                                   and column_table_map.get(val_name) == table_name)))
         val_is_row_measure = (
-            val_name.casefold() in measures
-            and val_name.casefold() in row_approx_measures
-            and val_name.casefold() not in available_folded
-            and val_name not in column_table_map
-        )
-        if val_is_row_measure:
-            if (aggregate[1].upper() != 'SUM'
-                    or (val_owner is not None and val_owner != table_name)):
+            val_is_measure and val_name.casefold() in row_approx_measures)
+        if val_is_measure:
+            if val_owner is not None and val_owner != table_name:
                 return None
         else:
             val_table = (
@@ -1585,7 +1598,7 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
             cross_table_dims.append(name)
         valid_keys.append(column(name, dim_table))
 
-    if val_is_row_measure:
+    if val_is_measure:
         inner = '[' + val_name.replace(']', ']]') + ']'
     elif not val_is_row_expression:
         inner = aggregates[aggregate[1].upper()] + '(' + column(val_name) + ')'
@@ -1599,9 +1612,11 @@ def _compile_approximate_fixed_shelf(masked, restore, *, table_name,
     if missing_dims:
         extra_warnings.append(
             f"missing schema dimension(s) {', '.join(missing_dims)} omitted")
-    if val_is_row_measure:
+    if val_is_measure:
+        measure_kind = 'row-expression' if val_is_row_measure else 'ordinary'
         extra_warnings.append(
-            f"SUM over row-expression measure {val_name} unwrapped")
+            f"{aggregate[1].upper()} over {measure_kind} measure {val_name} "
+            "aggregated with shelf semantics unverified")
     if val_is_row_expression:
         extra_warnings.append(
             f"{aggregate[1].upper()} numeric row expression lowered to "
@@ -2027,8 +2042,9 @@ def _check_source_grain(root, table_name, column_table_map, measure_names,
             if argument[0] == 'ref':
                 if (table_columns is not None and node[1].upper() != 'ATTR'
                         and binding(argument)[0] == 'measure'):
-                    return ('aggregation of a calculation requires its source '
-                            'shelf and total grain')
+                    if is_calc_column:
+                        return ('aggregation of a calculation requires its source '
+                                'shelf and total grain')
                 return None
             refs = [part for part in _source_walk(argument) if part[0] == 'ref']
             explicit_owners = {
