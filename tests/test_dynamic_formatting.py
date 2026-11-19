@@ -47,6 +47,31 @@ class TestDynamicFormatMeasures(unittest.TestCase):
         self.assertIn('"M"', fmt_measures[0]['expression'])
         self.assertIn('"K"', fmt_measures[0]['expression'])
 
+    def test_wrapper_references_escape_closing_brackets_for_each_format_type(self):
+        from tmdl_generator import _inject_dynamic_format_measures
+        source_measures = [
+            {'name': 'Revenue]suffix', 'expression': 'SUM([Amount])',
+             'formatString': '$#,0.00'},
+            {'name': 'Margin]suffix', 'expression': 'DIVIDE([Profit], [Revenue])',
+             'formatString': '0.00%'},
+            {'name': 'Units]suffix', 'expression': 'SUM([Quantity])',
+             'formatString': '#,0'},
+        ]
+        model = {'model': {'tables': [{
+            'name': 'Sales', 'columns': [], 'measures': source_measures,
+        }]}}
+
+        _inject_dynamic_format_measures(model)
+
+        measures = model['model']['tables'][0]['measures']
+        wrappers = {measure['name']: measure['expression']
+                    for measure in measures if measure['name'].endswith(' Formatted')}
+        for source_name in ('Revenue]suffix', 'Margin]suffix', 'Units]suffix'):
+            with self.subTest(source_name=source_name):
+                escaped_name = source_name.replace(']', ']]')
+                self.assertIn(f'VAR _val = [{escaped_name}]',
+                              wrappers[f'{source_name} Formatted'])
+
     def test_euro_currency_gets_formatted(self):
         from tmdl_generator import _inject_dynamic_format_measures
         model = {

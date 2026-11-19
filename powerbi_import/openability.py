@@ -181,7 +181,7 @@ def extract_shared_m_expressions(tmdl_text: str) -> List[Tuple[str, str]]:
 
 def _is_model_only_project(project_dir):
     """Return whether the PBIP shell declares only a semantic model."""
-    pbip_files = glob.glob(os.path.join(project_dir, "*.pbip"))
+    pbip_files = _glob(project_dir, "*.pbip")
     if len(pbip_files) != 1:
         return False
     manifest = _read_json(pbip_files[0])
@@ -194,11 +194,11 @@ def _is_model_only_project(project_dir):
 
 def _check_structure(project_dir) -> CheckResult:
     issues = []
-    has_sm = bool(glob.glob(os.path.join(project_dir, "**", "*.SemanticModel"),
-                            recursive=True)) or bool(_tmdl_files(project_dir))
-    has_report = bool(glob.glob(os.path.join(project_dir, "**", "definition.pbir"),
-                                recursive=True)) or bool(
-        glob.glob(os.path.join(project_dir, "**", "*.Report"), recursive=True))
+    has_sm = bool(_glob(project_dir, "**", "*.SemanticModel",
+                        recursive=True)) or bool(_tmdl_files(project_dir))
+    has_report = bool(_glob(project_dir, "**", "definition.pbir",
+                            recursive=True)) or bool(
+        _glob(project_dir, "**", "*.Report", recursive=True))
     if not has_sm:
         issues.append("no semantic model (.SemanticModel / .tmdl) found")
     if not has_report and not _is_model_only_project(project_dir):
@@ -214,7 +214,7 @@ def _declared_reports(project_dir):
     works for both layouts, and is what Power BI Desktop actually opens.
     """
     declared = {}
-    for pbip_path in glob.glob(os.path.join(project_dir, "*.pbip")):
+    for pbip_path in _glob(project_dir, "*.pbip"):
         pbip = _read_json(pbip_path)
         if not isinstance(pbip, dict):
             declared[pbip_path] = None
@@ -229,12 +229,12 @@ def _declared_reports(project_dir):
 def _check_pbip_contract(project_dir) -> CheckResult:
     """Validate the required shell files for a standard PBIP project."""
     fabric_suffixes = ("Lakehouse", "Dataflow", "Notebook", "Pipeline")
-    if any(glob.glob(os.path.join(project_dir, f"*.{suffix}"))
+    if any(_glob(project_dir, f"*.{suffix}")
            for suffix in fabric_suffixes):
         return CheckResult("pbip_contract", True, "error", [])
 
-    report_dirs = glob.glob(os.path.join(project_dir, "*.Report"))
-    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    report_dirs = _glob(project_dir, "*.Report")
+    model_dirs = _glob(project_dir, "*.SemanticModel")
     if not report_dirs and not model_dirs:
         return CheckResult("pbip_contract", True, "error", [])
 
@@ -275,7 +275,7 @@ def _check_pbip_contract(project_dir) -> CheckResult:
                 issues.append(f"missing required PBIP artifact: {relative}")
         tables_dir = os.path.join(project_dir, f"{name}.SemanticModel",
                                   "definition", "tables")
-        if not glob.glob(os.path.join(tables_dir, "*.tmdl")):
+        if not _glob(tables_dir, "*.tmdl"):
             issues.append("missing required PBIP artifact: SemanticModel/definition/tables/*.tmdl")
     return CheckResult("pbip_contract", not issues, "error", issues)
 
@@ -287,7 +287,7 @@ def _check_generated_content(project_dir) -> CheckResult:
     except Exception as exc:  # noqa: BLE001 - preflight must return a check result
         return CheckResult("generated_content", False, "error", [str(exc)])
     issues = []
-    for model_dir in glob.glob(os.path.join(project_dir, "*.SemanticModel")):
+    for model_dir in _glob(project_dir, "*.SemanticModel"):
         model_path = os.path.join(model_dir, "definition", "model.tmdl")
         if not os.path.isfile(model_path):
             continue
@@ -300,8 +300,8 @@ def _check_generated_content(project_dir) -> CheckResult:
 
 def _check_manifest_coherence(project_dir) -> CheckResult:
     """Validate PBIP shell, platform identities, and report model binding."""
-    report_dirs = glob.glob(os.path.join(project_dir, "*.Report"))
-    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    report_dirs = _glob(project_dir, "*.Report")
+    model_dirs = _glob(project_dir, "*.SemanticModel")
     if not model_dirs:
         return CheckResult("manifest_coherence", True, "error", [])
     name = os.path.basename(model_dirs[0]).rsplit(".", 1)[0]
@@ -357,7 +357,7 @@ def _check_manifest_coherence(project_dir) -> CheckResult:
 def _check_report_content(project_dir) -> CheckResult:
     """Reject parseable but empty PBIR report/page/visual definitions."""
     issues = []
-    report_dirs = glob.glob(os.path.join(project_dir, "*.Report"))
+    report_dirs = _glob(project_dir, "*.Report")
     helper_types = {"textbox", "image", "actionButton", "shape", "basicShape"}
     for report_dir in report_dirs:
         definition = os.path.join(report_dir, "definition")
@@ -365,12 +365,12 @@ def _check_report_content(project_dir) -> CheckResult:
         report = _read_json(report_path)
         if not isinstance(report, dict) or not report:
             issues.append(f"{os.path.relpath(report_path, project_dir)}: empty report definition")
-        for page_path in glob.glob(os.path.join(definition, "pages", "*", "page.json")):
+        for page_path in _glob(definition, "pages", "*", "page.json"):
             page = _read_json(page_path)
             if not isinstance(page, dict) or not page:
                 issues.append(f"{os.path.relpath(page_path, project_dir)}: empty page definition")
-        for visual_path in glob.glob(os.path.join(
-                definition, "pages", "*", "visuals", "*", "visual.json")):
+        for visual_path in _glob(
+                definition, "pages", "*", "visuals", "*", "visual.json"):
             visual_json = _read_json(visual_path)
             visual = visual_json.get("visual") if isinstance(visual_json, dict) else None
             visual_type = visual.get("visualType") if isinstance(visual, dict) else None
@@ -389,7 +389,7 @@ def _check_json_parse(project_dir) -> CheckResult:
     patterns = ["*.json", "*.pbir", "*.pbip", ".platform"]
     seen = set()
     for pat in patterns:
-        for fp in glob.glob(os.path.join(project_dir, "**", pat), recursive=True):
+        for fp in _glob(project_dir, "**", pat, recursive=True):
             if fp in seen:
                 continue
             seen.add(fp)
@@ -465,7 +465,7 @@ def _check_semantic_validation(project_dir) -> CheckResult:
     except Exception as exc:  # noqa: BLE001 - preflight must return a check result
         return CheckResult("semantic_validation", False, "error", [str(exc)])
     issues = []
-    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    model_dirs = _glob(project_dir, "*.SemanticModel")
     for model_dir in model_dirs:
         for issue in ArtifactValidator.validate_semantic_references(model_dir):
             if "Unknown column/measure" in issue:
@@ -483,7 +483,7 @@ def _check_lookupvalue_ambiguity(project_dir) -> CheckResult:
     except Exception as exc:  # noqa: BLE001 - preflight must return a check result
         return CheckResult("lookupvalue_ambiguity", False, "warning", [str(exc)])
     issues = []
-    model_dirs = glob.glob(os.path.join(project_dir, "*.SemanticModel"))
+    model_dirs = _glob(project_dir, "*.SemanticModel")
     for model_dir in model_dirs:
         issues.extend(ArtifactValidator.validate_lookupvalue_ambiguity(model_dir))
     return CheckResult("lookupvalue_ambiguity", not issues, "warning", issues)
@@ -496,10 +496,8 @@ def _check_executable_tmdl_dax(project_dir) -> CheckResult:
     except Exception as exc:  # noqa: BLE001 - preflight must return a check result
         return CheckResult("executable_dax", False, "error", [str(exc)])
     issues = []
-    paths = glob.glob(os.path.join(
-        project_dir, "*.SemanticModel", "definition", "tables", "*.tmdl"))
-    paths.extend(glob.glob(os.path.join(
-        project_dir, "*.SemanticModel", "definition", "roles.tmdl")))
+    paths = _glob(project_dir, "*.SemanticModel", "definition", "tables", "*.tmdl")
+    paths.extend(_glob(project_dir, "*.SemanticModel", "definition", "roles.tmdl"))
     for path in paths:
         for issue in ArtifactValidator.validate_tmdl_dax(path):
             issues.append(f"{os.path.relpath(path, project_dir)}: {issue}")
@@ -557,15 +555,15 @@ def _check_visual_bindings(project_dir) -> CheckResult:
         return CheckResult("visual_bindings", False, "error", [str(exc)])
 
     model = {"model": {"tables": []}}
-    for model_dir in glob.glob(os.path.join(project_dir, "*.SemanticModel")):
-        for path in glob.glob(os.path.join(model_dir, "definition", "tables", "*.tmdl")):
+    for model_dir in _glob(project_dir, "*.SemanticModel"):
+        for path in _glob(model_dir, "definition", "tables", "*.tmdl"):
             parsed = _parse_tmdl_table(path)
             if parsed:
                 model["model"]["tables"].append(parsed)
     if not model["model"]["tables"]:
         return CheckResult("visual_bindings", True, "error", [])
 
-    report_dirs = sorted(glob.glob(os.path.join(project_dir, "*.Report")))
+    report_dirs = sorted(_glob(project_dir, "*.Report"))
     if not report_dirs:
         return CheckResult("visual_bindings", True, "error", [])
 
@@ -593,8 +591,7 @@ def _check_native_query_refs(project_dir: str) -> CheckResult:
     malformed JSON remains the responsibility of the json_parse check.
     """
     issues = []
-    for path in sorted(glob.glob(os.path.join(project_dir, "**", "visual.json"),
-                                 recursive=True)):
+    for path in sorted(_glob(project_dir, "**", "visual.json", recursive=True)):
         data = _read_json(path)
         visual = data.get("visual") if isinstance(data, dict) else None
         query = visual.get("query") if isinstance(visual, dict) else None
@@ -632,8 +629,8 @@ def _check_model_column_projection(project_dir) -> CheckResult:
     from powerbi_import.artifact_diff import _parse_tmdl_table
 
     issues = []
-    for model_dir in glob.glob(os.path.join(project_dir, '*.SemanticModel')):
-        for path in glob.glob(os.path.join(model_dir, 'definition', 'tables', '*.tmdl')):
+    for model_dir in _glob(project_dir, '*.SemanticModel'):
+        for path in _glob(model_dir, 'definition', 'tables', '*.tmdl'):
             try:
                 with open(path, encoding='utf-8') as stream:
                     content = stream.read()
@@ -720,11 +717,10 @@ def _refresh_diagnostics(project_dir):
     risks = []
     calendars = []
     issues = []
-    for model_dir in sorted(glob.glob(os.path.join(project_dir, "*.SemanticModel"))):
+    for model_dir in sorted(_glob(project_dir, "*.SemanticModel")):
         model_name = os.path.basename(model_dir)
         tables = {}
-        for path in sorted(glob.glob(os.path.join(
-                model_dir, "definition", "tables", "*.tmdl"))):
+        for path in sorted(_glob(model_dir, "definition", "tables", "*.tmdl")):
             table = _parse_tmdl_table(path)
             if not table:
                 continue
@@ -848,7 +844,7 @@ def _check_schema(project_dir) -> CheckResult:
     except Exception as exc:  # noqa: BLE001 - preflight must return a check result
         return CheckResult("schema", False, "error", [str(exc)])
 
-    for report_dir in glob.glob(os.path.join(project_dir, "*.Report")):
+    for report_dir in _glob(project_dir, "*.Report"):
         definition_dir = os.path.join(report_dir, "definition")
         try:
             results = validate_report_dir(definition_dir)
@@ -865,7 +861,7 @@ def _check_schema(project_dir) -> CheckResult:
                 warnings.append(f"{relative}: {issue.path}: {issue.message}")
 
     # Keep missing visual schemas advisory for backward-compatible helper files.
-    for fp in glob.glob(os.path.join(project_dir, "**", "visual.json"), recursive=True):
+    for fp in _glob(project_dir, "**", "visual.json", recursive=True):
         data = _read_json(fp)
         if isinstance(data, dict) and "$schema" not in data:
             warnings.append(f"{os.path.relpath(fp, project_dir)}: missing $schema")
@@ -877,8 +873,7 @@ def _check_schema(project_dir) -> CheckResult:
 def _check_references(project_dir) -> CheckResult:
     """Verify the report→semantic-model link resolves (a dangling link won't open)."""
     issues = []
-    for pbir in glob.glob(os.path.join(project_dir, "**", "definition.pbir"),
-                          recursive=True):
+    for pbir in _glob(project_dir, "**", "definition.pbir", recursive=True):
         data = _read_json(pbir)
         if not isinstance(data, dict):
             continue
@@ -899,7 +894,7 @@ def _check_references(project_dir) -> CheckResult:
 def _check_report_structure(project_dir) -> CheckResult:
     """Verify essential report files/pages/visual files exist and are complete."""
     issues = []
-    report_dirs = glob.glob(os.path.join(project_dir, "**", "*.Report"), recursive=True)
+    report_dirs = _glob(project_dir, "**", "*.Report", recursive=True)
     for report_dir in report_dirs:
         pbir = os.path.join(report_dir, "definition.pbir")
         report_json_root = os.path.join(report_dir, "report.json")
@@ -916,7 +911,7 @@ def _check_report_structure(project_dir) -> CheckResult:
             )
 
         pages_root = os.path.join(report_dir, "definition", "pages")
-        page_dirs = [p for p in glob.glob(os.path.join(pages_root, "*")) if os.path.isdir(p)]
+        page_dirs = [p for p in _glob(pages_root, "*") if os.path.isdir(p)]
         if not page_dirs:
             # Some helper/thin reports may be intentionally empty; keep advisory only.
             continue
@@ -929,7 +924,7 @@ def _check_report_structure(project_dir) -> CheckResult:
                     f"Fix: recreate page metadata for this page folder."
                 )
             visuals_root = os.path.join(page_dir, "visuals")
-            visual_dirs = [v for v in glob.glob(os.path.join(visuals_root, "*")) if os.path.isdir(v)]
+            visual_dirs = [v for v in _glob(visuals_root, "*") if os.path.isdir(v)]
             for visual_dir in visual_dirs:
                 visual_json = os.path.join(visual_dir, "visual.json")
                 if not os.path.isfile(visual_json):
@@ -944,10 +939,8 @@ def _check_report_structure(project_dir) -> CheckResult:
 def _check_tmdl_partitions(project_dir) -> CheckResult:
     """Validate table/partition integrity in TMDL files (common Desktop load breaker)."""
     issues = []
-    table_tmdls = glob.glob(
-        os.path.join(project_dir, "**", "definition", "tables", "*.tmdl"),
-        recursive=True,
-    )
+    table_tmdls = _glob(
+        project_dir, "**", "definition", "tables", "*.tmdl", recursive=True)
     for tmdl in table_tmdls:
         try:
             lines = _read(tmdl).splitlines()
@@ -1029,12 +1022,12 @@ def _check_calc_column_dependencies(project_dir) -> CheckResult:
     and syntax checks cannot see this - the DAX is well-formed.
     """
     issues = []
-    for model_dir in glob.glob(os.path.join(project_dir, "*.SemanticModel")):
+    for model_dir in _glob(project_dir, "*.SemanticModel"):
         tables_dir = os.path.join(model_dir, "definition", "tables")
         if not os.path.isdir(tables_dir):
             continue
         calc_columns, measures = [], set()
-        for path in sorted(glob.glob(os.path.join(tables_dir, "*.tmdl"))):
+        for path in sorted(_glob(tables_dir, "*.tmdl")):
             try:
                 lines = _read(path).splitlines()
             except OSError:
@@ -1183,8 +1176,8 @@ def _check_data_files_present(project_dir: str) -> CheckResult:
     only the person running the migration can supply them.
     """
     issues = []
-    for expressions in glob.glob(
-            os.path.join(project_dir, "**", "definition", "expressions.tmdl"),
+    for expressions in _glob(
+            project_dir, "**", "definition", "expressions.tmdl",
             recursive=True):
         found = _DATA_FOLDER.search(_read(expressions))
         if not found:
@@ -1192,7 +1185,7 @@ def _check_data_files_present(project_dir: str) -> CheckResult:
         folder = _unescape_tmdl(found.group(1))
         definition = os.path.dirname(expressions)
         refs = set(_DATA_REF.findall(_read(expressions)))
-        for table in glob.glob(os.path.join(definition, "tables", "*.tmdl")):
+        for table in _glob(definition, "tables", "*.tmdl"):
             refs.update(_DATA_REF.findall(_read(table)))
         if not refs:
             continue
@@ -1225,8 +1218,7 @@ def _check_literal_grammar(project_dir: str) -> CheckResult:
     text hits the second one constantly -- ``Taux d'utilisation``.
     """
     issues = []
-    for path in glob.glob(os.path.join(project_dir, "**", "*.json"),
-                          recursive=True):
+    for path in _glob(project_dir, "**", "*.json", recursive=True):
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -1307,7 +1299,13 @@ def check_openability(project_dir: str) -> OpenabilityReport:
 # ════════════════════════════════════════════════════════════════════
 
 def _tmdl_files(project_dir):
-    return glob.glob(os.path.join(project_dir, "**", "*.tmdl"), recursive=True)
+    return _glob(project_dir, "**", "*.tmdl", recursive=True)
+
+
+def _glob(root, *parts, recursive=False):
+    """Glob below a literal directory path, preserving its bracket characters."""
+    pattern = os.path.join(glob.escape(os.fspath(root)), *parts)
+    return glob.glob(pattern, recursive=recursive)
 
 
 def _read(path):

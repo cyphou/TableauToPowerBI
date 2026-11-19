@@ -260,6 +260,22 @@ class TestTMDLSelfHealBrokenRefs(unittest.TestCase):
         measure = table['measures'][0]
         self.assertFalse(measure.get('isHidden', False))
 
+    def test_bracketed_table_suffix_is_not_misread_as_placeholder_column(self):
+        from powerbi_import.tmdl_generator import _self_heal_model
+        model = self._make_model([{
+            'name': 'ContratsActifs [ZPQ]',
+            'columns': [{'name': 'Centre_Site'}],
+            'measures': [{
+                'name': 'Total',
+                'expression': "SUM('ContratsActifs [ZPQ]'[Centre_Site])",
+            }],
+        }])
+
+        _self_heal_model(model)
+
+        columns = model['model']['tables'][0]['columns']
+        self.assertNotIn('ZPQ', {column.get('name') for column in columns})
+
     def test_unicode_and_special_field_refs_create_placeholders(self):
         from powerbi_import.tmdl_generator import _self_heal_model
         model = self._make_model([{

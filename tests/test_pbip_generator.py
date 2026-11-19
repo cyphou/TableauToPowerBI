@@ -686,6 +686,27 @@ class TestGenerateProject(unittest.TestCase):
         sm_dir = os.path.join(self.output_dir, "Test", "Test.SemanticModel")
         self.assertTrue(os.path.isdir(sm_dir))
 
+    def test_openability_finds_generated_project_under_bracketed_directory(self):
+        from powerbi_import.openability import check_openability
+
+        bracketed_root = os.path.join(self.output_dir, 'Project [ZPQ]')
+        os.makedirs(bracketed_root)
+        self.gen.output_dir = bracketed_root
+        self._generate()
+
+        project_dir = os.path.join(bracketed_root, 'Test')
+        report = check_openability(project_dir)
+        checks = {check.name: check for check in report.checks}
+
+        self.assertTrue(os.path.isfile(os.path.join(
+            project_dir, 'Test.SemanticModel', 'definition', 'model.tmdl')))
+        self.assertTrue(os.path.isfile(os.path.join(
+            project_dir, 'Test.SemanticModel', 'definition', 'tables', 'Data.tmdl')))
+        self.assertTrue(os.path.isfile(os.path.join(
+            project_dir, 'Test.Report', 'definition.pbir')))
+        self.assertTrue(checks['structure'].ok, checks['structure'].issues)
+        self.assertTrue(checks['tmdl_present'].ok, checks['tmdl_present'].issues)
+
     def test_pbip_contains_valid_json(self):
         self._generate()
         pbip_path = os.path.join(self.output_dir, "Test", "Test.pbip")

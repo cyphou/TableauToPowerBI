@@ -3463,6 +3463,7 @@ def _inject_dynamic_format_measures(model):
             fmt = measure.get('formatString', '')
             expr = measure.get('expression', '')
             name = measure.get('name', '')
+            escaped_name = str(name).replace(']', ']]')
             if not fmt or not expr:
                 continue
             source_type = str(measure.get('_tableau_datatype', '')).casefold()
@@ -3493,7 +3494,7 @@ def _inject_dynamic_format_measures(model):
                 table['measures'].append({
                     'name': fmt_name,
                     'expression': (
-                        f'VAR _val = [{name}] '
+                        f'VAR _val = [{escaped_name}] '
                         f'RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", '
                         f'IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", '
                         f'IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", '
@@ -3517,7 +3518,7 @@ def _inject_dynamic_format_measures(model):
                 table['measures'].append({
                     'name': fmt_name,
                     'expression': (
-                        f'VAR _val = [{name}] '
+                        f'VAR _val = [{escaped_name}] '
                         f'RETURN IF(ABS(_val) <= 1, FORMAT(_val, "0.0%"), '
                         f'FORMAT(_val, "#,0.00"))'
                     ),
@@ -3538,7 +3539,7 @@ def _inject_dynamic_format_measures(model):
                 table['measures'].append({
                     'name': fmt_name,
                     'expression': (
-                        f'VAR _val = [{name}] '
+                        f'VAR _val = [{escaped_name}] '
                         f'RETURN IF(ABS(_val) >= 1E9, FORMAT(_val / 1E9, "#,0.0") & "B", '
                         f'IF(ABS(_val) >= 1E6, FORMAT(_val / 1E6, "#,0.0") & "M", '
                         f'IF(ABS(_val) >= 1E3, FORMAT(_val / 1E3, "#,0.0") & "K", '

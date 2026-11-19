@@ -20,10 +20,26 @@ _DAX_FIELD_REF_RE = re.compile(
     r"\[(?P<column>(?:[^\]]|\]\])+)\]",
     re.UNICODE,
 )
+_DAX_QUOTED_IDENTIFIER_RE = re.compile(r"'(?:[^']|'')*'")
+_DAX_BRACKET_REF_RE = re.compile(r"\[(?P<column>(?:[^\]]|\]\])+)\]")
 _NUMERIC_AGGREGATE_RE = re.compile(
     r'\b(?:SUM|AVERAGE|MIN|MAX|MEDIAN|PRODUCT|COUNT|COUNTA)\s*\(\s*$',
     re.IGNORECASE,
 )
+
+
+def _in_quoted_identifier(expression, position):
+    return any(match.start() < position < match.end()
+               for match in _DAX_QUOTED_IDENTIFIER_RE.finditer(expression))
+
+
+def _dax_bracket_refs(expression):
+    """Return field names, excluding brackets embedded in quoted table names."""
+    return [
+        match.group('column').replace(']]', ']')
+        for match in _DAX_BRACKET_REF_RE.finditer(expression)
+        if not _in_quoted_identifier(expression, match.start())
+    ]
 
 
 def _is_numeric_use(consumer, column_name, *, placeholder_table, consumer_table):
@@ -36,6 +52,8 @@ def _is_numeric_use(consumer, column_name, *, placeholder_table, consumer_table)
                      or consumer.get('_tableau_datatype') or '')
     numeric_result = str(declared_type).casefold() in _NUMERIC_SOURCE_TYPES
     for match in _DAX_FIELD_REF_RE.finditer(code):
+        if _in_quoted_identifier(code, match.start('column') - 1):
+            continue
         name = match.group('column').replace(']]', ']')
         if name.casefold() != column_name.casefold():
             continue
@@ -322,7 +340,7 @@ def _self_heal_model(model, recovery=None):
                     continue
                 unresolved_columns.append(q_col)
 
-            refs = re.findall(r'\[([^\]]+)\]', expr)
+            refs = _dax_bracket_refs(expr)
             for ref in refs:
                 if ref in table_columns.get(tname, set()):
                     continue
@@ -485,7 +503,7 @@ def _self_heal_model(model, recovery=None):
                 repairs += 1
 
             # Also check bare [ColumnName] references (not qualified)
-            bare_refs = re.findall(r'\[([^\]]+)\]', expr)
+            bare_refs = _dax_bracket_refs(expr)
             for ref in bare_refs:
                 if ref == col.get('name'):
                     self_referential.append(col)
