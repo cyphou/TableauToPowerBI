@@ -3838,6 +3838,15 @@ def _migrate_single_workbook(tableau_file, basename, workbook_output_dir, displa
     }
 
 
+def _record_openability_pipeline_failure(report, failure):
+    from powerbi_import.openability import CheckResult
+
+    report.checks.insert(0, CheckResult(
+        'pipeline_completion', False, 'error',
+        [f"{failure['stage']}: {failure['message']}"]))
+    report.diagnostics['pipeline_failure'] = failure
+
+
 def _finalize_failed_workbook(task, result):
     """Publish diagnostic artifacts for the final failed state."""
     if (task['output_format'] == 'fabric'
@@ -3849,7 +3858,6 @@ def _finalize_failed_workbook(task, result):
         MigrationQualityReport,
         apply_pipeline_failure,
     )
-    from powerbi_import.openability import CheckResult
 
     name = task['basename']
     project_dir = os.path.join(task['workbook_output_dir'], name)
@@ -3874,10 +3882,7 @@ def _finalize_failed_workbook(task, result):
         'failure': failure, 'error_details': failure['message'],
     })
     report = check_openability(project_dir)
-    report.checks.append(CheckResult(
-        'pipeline_completion', False, 'error',
-        [f"{failure['stage']}: {failure['message']}"]))
-    report.diagnostics['pipeline_failure'] = failure
+    _record_openability_pipeline_failure(report, failure)
     if diagnostic_pbip:
         try:
             from powerbi_import.pbip_generator import PowerBIProjectGenerator
@@ -9894,21 +9899,29 @@ def _run_openability_gate(project_dir):
 
     def check_project():
         report = check_openability(project_dir)
-        if os.path.isfile(os.path.join(project_dir, 'partial_generation.json')):
-            from powerbi_import.openability import CheckResult
-            failure = {'stage': 'generation', 'message': 'Partial project is not validated.'}
+        partial = os.path.isfile(os.path.join(project_dir, 'partial_generation.json'))
+        failure = None
+        # A newly published project may still have the preceding run's failure file.
+        project_name = os.path.basename(os.path.normpath(project_dir))
+        marker = os.path.join(project_dir, f'{project_name}.pbip')
+        if partial or not os.path.isfile(marker):
             try:
                 with open(os.path.join(project_dir, 'migration_failure.json'),
                           encoding='utf-8') as stream:
-                    saved_failure = json.load(stream).get('failure')
-                if isinstance(saved_failure, dict):
-                    failure.update(saved_failure)
-            except (OSError, ValueError, AttributeError):
+                    saved = json.load(stream).get('failure')
+                if (isinstance(saved, dict)
+                        and isinstance(saved.get('stage'), str)
+                        and isinstance(saved.get('message'), str)
+                        and (partial or saved['stage'] == 'extraction')):
+                    failure = saved
+            except FileNotFoundError:
                 pass
-            report.checks.append(CheckResult(
-                'pipeline_completion', False, 'error',
-                [f"{failure.get('stage')}: {failure.get('message')}"]))
-            report.diagnostics['pipeline_failure'] = failure
+            except (OSError, ValueError, AttributeError) as exc:
+                logger.warning("Could not read the previous migration failure: %s", exc)
+        if partial and failure is None:
+            failure = {'stage': 'generation', 'message': 'Partial project is not validated.'}
+        if failure is not None:
+            _record_openability_pipeline_failure(report, failure)
         return report
 
     report = check_project()

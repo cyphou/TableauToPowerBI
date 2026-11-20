@@ -179,6 +179,51 @@ class TestStreamingJson(unittest.TestCase):
         self.assertEqual(
             [name for name in os.listdir(self.tmp) if name.startswith('.datasources_')], [])
 
+    def test_datasource_replace_retries_transient_windows_denial(self):
+        from extract_tableau_data import TableauExtractor
+
+        ext = TableauExtractor.__new__(TableauExtractor)
+        ext.output_dir = self.tmp
+        ext.workbook_data = {'datasources': [{'name': 'new source'}]}
+        replace = os.replace
+        denial = PermissionError('injected Windows access denial')
+        denial.winerror = 5
+
+        with mock.patch('extract_tableau_data.os.replace',
+                        wraps=replace,
+                        side_effect=[denial, denial, mock.DEFAULT]) as publish:
+            ext.save_extractions()
+
+        self.assertEqual(publish.call_count, 3)
+        self.assertEqual(len({call.args[0] for call in publish.call_args_list}), 1)
+        with open(os.path.join(self.tmp, 'datasources.json'), encoding='utf-8') as f:
+            self.assertEqual(json.load(f), ext.workbook_data['datasources'])
+        self.assertFalse(any(name.endswith('.tmp') for name in os.listdir(self.tmp)))
+
+    def test_persistent_windows_denial_preserves_previous_datasources(self):
+        from extract_tableau_data import TableauExtractor
+
+        path = os.path.join(self.tmp, 'datasources.json')
+        previous = b'[{"name": "previous source"}]'
+        with open(path, 'wb') as f:
+            f.write(previous)
+        ext = TableauExtractor.__new__(TableauExtractor)
+        ext.output_dir = self.tmp
+        ext.workbook_data = {'datasources': [{'name': 'new source'}]}
+        denial = PermissionError('injected persistent sharing error')
+        denial.winerror = 32
+
+        with mock.patch('extract_tableau_data.os.replace',
+                        side_effect=denial) as publish:
+            with self.assertRaises(PermissionError) as raised:
+                ext.save_extractions()
+
+        self.assertIs(raised.exception, denial)
+        self.assertEqual(publish.call_count, 3)
+        with open(path, 'rb') as f:
+            self.assertEqual(f.read(), previous)
+        self.assertFalse(any(name.endswith('.tmp') for name in os.listdir(self.tmp)))
+
     def test_salvage_datasource_checkpoint_uses_atomic_replace(self):
         from extract_tableau_data import TableauExtractor
 
@@ -196,9 +241,10 @@ class TestStreamingJson(unittest.TestCase):
         ext._salvage_secrets = set()
 
         with mock.patch('extract_tableau_data.os.replace',
-                        side_effect=OSError('injected replace failure')):
+                        side_effect=OSError('injected replace failure')) as publish:
             with self.assertRaisesRegex(OSError, 'injected replace failure'):
                 ext._save_salvage_checkpoint(datasource={'name': 'new source'})
+        publish.assert_called_once()
 
         with open(path, 'rb') as f:
             self.assertEqual(f.read(), previous)

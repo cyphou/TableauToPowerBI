@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from copy import deepcopy
@@ -4158,10 +4159,21 @@ class TableauExtractor:
         os.close(fd)
         try:
             write_temp_file(temp_path)
-            os.replace(temp_path, path)
+            for attempt in range(3):
+                try:
+                    os.replace(temp_path, path)
+                    return
+                except PermissionError as exc:
+                    if attempt == 2 or getattr(exc, 'winerror', None) not in (5, 32):
+                        raise
+                    time.sleep(0.05)
         finally:
-            if os.path.exists(temp_path):
+            try:
                 os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("Could not remove extraction temporary file: %s", exc)
 
     def save_extractions(self, *, changed_only=False):
         """Saves extractions to JSON.

@@ -22,6 +22,40 @@ def _read(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def test_extraction_failure_leads_openability_report_and_survives_recheck(tmp_path):
+    project = tmp_path / "Synthetic"
+    task = {
+        "output_format": "pbip", "tableau_file": str(tmp_path / "Synthetic.twb"),
+        "basename": "Synthetic", "workbook_output_dir": str(tmp_path),
+    }
+    message = "[WinError 5] Access denied: temporary file -> datasources.json"
+    result = {"stages": {"extraction": "failed"}, "error_details": message}
+
+    migrate._finalize_failed_workbook(task, result)
+
+    def check_report():
+        report = _read(project / "openability_report.json")
+        saved = _read(project / "migration_failure.json")
+        assert report["openable"] is False
+        assert report["checks"][0]["name"] == "pipeline_completion"
+        assert report["blocking_issues"][0] == f"[pipeline_completion] extraction: {message}"
+        assert report["diagnostics"]["pipeline_failure"] == saved["failure"]
+
+    check_report()
+    with redirect_stdout(io.StringIO()):
+        assert not migrate._run_openability_gate(str(project))
+    check_report()
+
+    # A new .pbip makes the previous extraction failure stale. The fixture
+    # still fails other static checks because it has no generated model.
+    (project / "Synthetic.pbip").write_text("{}", encoding="utf-8")
+    with redirect_stdout(io.StringIO()):
+        assert not migrate._run_openability_gate(str(project))
+    report = _read(project / "openability_report.json")
+    assert "pipeline_failure" not in report["diagnostics"]
+    assert not any(check["name"] == "pipeline_completion" for check in report["checks"])
+
+
 def _publish_stale_result(workbook_output_dir, basename, **kwargs):
     project = Path(workbook_output_dir, basename)
     project.mkdir(parents=True, exist_ok=True)

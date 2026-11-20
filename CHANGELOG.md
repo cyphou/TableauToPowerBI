@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Allow up to three attempts to publish Tableau datasource extracts atomically
+  on Windows access-denied or sharing errors. If extraction still fails,
+  show the extraction error before missing-project symptoms in openability
+  diagnostics, including when rechecking the failed output.
 - Adopt the requested best-effort formula policy for recoverable uncertainty:
   exact DAX remains preferred; otherwise emit a plausible approximation with
   a visible DAX warning and TMDL `MigrationNote` instead of silently blanking a
