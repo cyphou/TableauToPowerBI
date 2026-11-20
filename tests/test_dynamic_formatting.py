@@ -72,6 +72,32 @@ class TestDynamicFormatMeasures(unittest.TestCase):
                 self.assertIn(f'VAR _val = [{escaped_name}]',
                               wrappers[f'{source_name} Formatted'])
 
+    def test_self_healing_preserves_generated_escaped_measure_reference(self):
+        from tmdl_generator import _inject_dynamic_format_measures
+        from powerbi_import.self_healing_v3 import _heal_dax_unbalanced_brackets
+
+        measure_name = '% of Total Centre_Site (COUNTD Ventes [ZPQ])'
+        model = {'model': {'tables': [{
+            'name': 'Ventes [ZPQ]',
+            'columns': [],
+            'measures': [{
+                'name': measure_name,
+                'expression': 'DIVIDE([Count], [Total])',
+                'formatString': '0.00%',
+            }],
+        }]}}
+
+        _inject_dynamic_format_measures(model)
+        wrapper = model['model']['tables'][0]['measures'][1]
+        original_expression = wrapper['expression']
+
+        self.assertIn(
+            '[' + measure_name.replace(']', ']]') + ']',
+            original_expression,
+        )
+        self.assertEqual(_heal_dax_unbalanced_brackets(model), 0)
+        self.assertEqual(wrapper['expression'], original_expression)
+
     def test_euro_currency_gets_formatted(self):
         from tmdl_generator import _inject_dynamic_format_measures
         model = {

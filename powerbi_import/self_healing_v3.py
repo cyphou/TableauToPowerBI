@@ -1713,6 +1713,40 @@ def _heal_m_dataflow_ref_dangling(model, recovery=None) -> int:
 _VALID_DAX_FUNCS: set | None = None
 
 
+def _dax_bracket_imbalance(expression: str) -> tuple[list[int], list[int]]:
+    """Return unmatched DAX bracket positions, respecting identifier escapes."""
+    unmatched_opens = []
+    unmatched_closes = []
+    opening = None
+    quote = None
+    i = 0
+    while i < len(expression):
+        char = expression[i]
+        if quote is not None:
+            if char == quote:
+                if i + 1 < len(expression) and expression[i + 1] == quote:
+                    i += 2
+                    continue
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == '[':
+            if opening is None:
+                opening = i
+        elif char == ']':
+            if opening is None:
+                unmatched_closes.append(i)
+            elif i + 1 < len(expression) and expression[i + 1] == ']':
+                i += 2
+                continue
+            else:
+                opening = None
+        i += 1
+    if opening is not None:
+        unmatched_opens.append(opening)
+    return unmatched_opens, unmatched_closes
+
+
 def _heal_dax_unbalanced_brackets(model, recovery=None) -> int:
     """Detect unbalanced ``[`` / ``]`` in DAX expressions and strip extras."""
     repairs = 0
@@ -1722,29 +1756,23 @@ def _heal_dax_unbalanced_brackets(model, recovery=None) -> int:
             expr = item.get('expression') or ''
             if not expr:
                 continue
-            opens = expr.count('[')
-            closes = expr.count(']')
-            if opens != closes:
+            unmatched_opens, unmatched_closes = _dax_bracket_imbalance(expr)
+            if unmatched_opens or unmatched_closes:
                 item_name = item.get('name', '?')
-                if opens > closes:
-                    expr += ']' * (opens - closes)
-                else:
-                    # remove excess trailing ]
-                    excess = closes - opens
-                    chars = list(expr)
-                    removed = 0
-                    for i in range(len(chars) - 1, -1, -1):
-                        if chars[i] == ']' and removed < excess:
-                            chars.pop(i)
-                            removed += 1
-                    expr = ''.join(chars)
+                for position in reversed(unmatched_closes):
+                    expr = expr[:position] + expr[position + 1:]
+                expr += ']' * len(unmatched_opens)
                 item['expression'] = expr
                 repairs += 1
                 if recovery is not None:
                     recovery.record(
                         'tmdl', 'dax_unbalanced_brackets',
                         item_name=f'{tname}.{item_name}',
-                        description=f'Unbalanced [ ] ({opens} open, {closes} close)',
+                        description=(
+                            'Unbalanced [ ] '
+                            f'({len(unmatched_opens)} unmatched open, '
+                            f'{len(unmatched_closes)} unmatched close)'
+                        ),
                         action='Appended/removed brackets to balance',
                         severity='warning',
                     )

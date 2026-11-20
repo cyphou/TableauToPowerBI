@@ -49,17 +49,48 @@ class TestDaxUnbalancedBrackets(unittest.TestCase):
 
     def test_extra_close_bracket(self):
         model = _model([{'name': 'T', 'measures': [
-            {'name': 'M', 'expression': 'SUM([Amount]])'}
+            {'name': 'M', 'expression': 'SUM([Net]] Total])])'}
         ]}])
         self.assertEqual(_heal_dax_unbalanced_brackets(model), 1)
         expr = model['model']['tables'][0]['measures'][0]['expression']
-        self.assertEqual(expr.count('['), expr.count(']'))
+        self.assertEqual(expr, 'SUM([Net]] Total]))')
 
     def test_column_expression_also_healed(self):
         model = _model([{'name': 'T', 'columns': [
-            {'name': 'C', 'expression': '[A + [B]'}
+            {'name': 'C', 'expression': '[A + B'}
         ]}])
         self.assertEqual(_heal_dax_unbalanced_brackets(model), 1)
+
+    def test_escaped_closing_bracket_in_measure_reference_is_left_alone(self):
+        measure_name = '% of Total Centre_Site (COUNTD Ventes [ZPQ])'
+        expression = (
+            'VAR _val = [' + measure_name.replace(']', ']]') + '] '
+            'RETURN IF(ABS(_val) <= 1, FORMAT(_val, "0.0%"), '
+            'FORMAT(_val, "#,0.00"))'
+        )
+        model = _model([{
+            'name': 'Ventes [ZPQ]',
+            'measures': [{'name': measure_name + ' Formatted',
+                          'expression': expression}],
+        }])
+
+        self.assertEqual(_heal_dax_unbalanced_brackets(model), 0)
+        self.assertEqual(
+            model['model']['tables'][0]['measures'][0]['expression'],
+            expression,
+        )
+
+    def test_brackets_inside_quoted_table_names_and_strings_are_ignored(self):
+        expression = 'SUM(\'Sales [ZPQ]\'[Amount]) + IF(TRUE(), "[text]", 0)'
+        model = _model([{'name': 'Sales', 'measures': [
+            {'name': 'M', 'expression': expression}
+        ]}])
+
+        self.assertEqual(_heal_dax_unbalanced_brackets(model), 0)
+        self.assertEqual(
+            model['model']['tables'][0]['measures'][0]['expression'],
+            expression,
+        )
 
     def test_empty_expression_ignored(self):
         model = _model([{'name': 'T', 'measures': [
